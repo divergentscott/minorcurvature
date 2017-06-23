@@ -6,7 +6,7 @@
 #include <vtkCellArray.h>
 #include <vtkSTLReader.h>
 #include "vtkSmartPointer.h"
-#include "vtkIDTypeArray.h"
+#include "vtkIdTypeArray.h"
 #include "vtkFloatArray.h"
 #include "vtkPolyDataNormals.h"
 #include "vtkCellData.h"
@@ -78,8 +78,8 @@ vtkSmartPointer<vtkPolyData> build_small_simplicial_example()
   //   }
   // }
 
-  int xtris = 6;
-  int ytris = 6;
+  int xtris = 100;
+  int ytris = 100;
   double param_pts[xtris*(ytris+1)][2];
   int const num_tris = 2 * xtris * ytris;
   int cell_list[num_tris][3];
@@ -199,9 +199,8 @@ vtkSmartPointer<vtkPolyData> compute_minor_curvature_field(vtkSmartPointer<vtkPo
       edges[bar] = pts [ edge_ends[bar][0] ] - pts [ edge_ends[bar][1] ];
       //Edge lengths
       edge_lengths[bar]=edges[bar].Norm();
-      //Tangent vectors perpindicular to their corresponding edge
-      tang_vects[bar]=edges[bar].Cross(normal);
-      tang_vects[bar].Normalize();
+      //Normalize edges
+      edges[bar].Normalize();
       //Find neighboring cell across edge bar
       auto cell_ngb = vtkSmartPointer<vtkIdList>::New();
       surface->GetCellEdgeNeighbors(foo,
@@ -216,11 +215,11 @@ vtkSmartPointer<vtkPolyData> compute_minor_curvature_field(vtkSmartPointer<vtkPo
         vtkVector3d ngb_normal(temp_n);
         //The sign of the angle is taken to agree with right-hand rotation
         //about the edge vector.
-        angle = asin( edges[bar].Dot( normal.Cross(ngb_normal) ) / edge_lengths[bar] );
+        angle = asin( edges[bar].Dot( normal.Cross(ngb_normal) ) ) * edge_lengths[bar] ;
         //This is computed over the basis edge[0]=p2-p1, edge[1]=p0-p2
-        edott0=edges[0].Dot(tang_vects[bar]);
-        edott1=edges[1].Dot(tang_vects[bar]);
-        //Compute the shape operator matrix entries shape10=shape01
+        edott0=edges[0].Dot(edges[bar]);
+        edott1=edges[1].Dot(edges[bar]);
+        //Compute the shape operator matrix entries shape10=shape01 except the eigenvalues are reversed
         shape00+=angle * edott0 * edott0;
         shape01+=angle * edott0 * edott1;
         shape11+=angle * edott1 * edott1;
@@ -231,19 +230,19 @@ vtkSmartPointer<vtkPolyData> compute_minor_curvature_field(vtkSmartPointer<vtkPo
   double shape_discr=shape_trace*shape_trace-4*(shape00*shape11-shape01*shape01);
   double shape_small_eig;
   if(shape_trace>0){
-    shape_small_eig=(shape_trace - sqrt(shape_discr))/2.0;
+    shape_small_eig=(shape_trace + sqrt(shape_discr))/2.0;
   }
   else{
-    shape_small_eig=(shape_trace + sqrt(shape_discr))/2.0;
+    shape_small_eig=(shape_trace - sqrt(shape_discr))/2.0;
   }
   double minor_curv_vect[2] = { shape01 , shape_small_eig-shape00 };
   //Should this get normalized? There's currently nothing to stop crashing
   //if the curvature is uniformly 0
-  // if(minor_curv_vect[0]*minor_curv_vect[1]){
-  //   double magni = sqrt(minor_curv_vect[0]*minor_curv_vect[0]+minor_curv_vect[1]*minor_curv_vect[1]);
-  //   minor_curv_vect[0]*=1/magni;
-  //   minor_curv_vect[1]*=1/magni;
-  // }
+  if(minor_curv_vect[0]*minor_curv_vect[1]){
+    double magni = sqrt(minor_curv_vect[0]*minor_curv_vect[0]+minor_curv_vect[1]*minor_curv_vect[1]);
+    minor_curv_vect[0]*=1/magni;
+    minor_curv_vect[1]*=1/magni;
+  }// }
   //std::cout << minor_curv_vect[0] << " " << minor_curv_vect[1] <<std::endl;
   minor_curv_field->SetTuple( foo , minor_curv_vect);
   vtkVector3d euc_curv_vect = minor_curv_vect[0]*edges[0]+minor_curv_vect[1]*edges[1];
