@@ -45,7 +45,7 @@ template <typename T> int sgn(T val) {
 
 vtkSmartPointer<vtkPolyData> build_small_simplicial_example()
 {
-  std::string example_name ("simple2"); //"cylinder"
+  std::string example_name ("cylinder"); //"simple" "simple2" "cylinder"
   auto points = vtkSmartPointer<vtkPoints>::New();
   auto triangles = vtkSmartPointer<vtkCellArray>::New();
 
@@ -88,7 +88,7 @@ vtkSmartPointer<vtkPolyData> build_small_simplicial_example()
 
   if (example_name.compare("simple2") == 0)
   {
-    double angle0 = M_PI/6, angle1 = 0.0 , angle2 = 0.0 ;
+    double angle0 = 0.0, angle1 = 0.0 , angle2 = M_PI/4;
     double pt_pos[6][3] = {
       {0,0,0},
       {1,0,0},
@@ -149,15 +149,17 @@ vtkSmartPointer<vtkPolyData> build_small_simplicial_example()
       param_pts[foo][1]=y_shift*pt_row;
       //std::cout<<pt_col<<pt_row<<" "<<param_pts[foo][0]<<" "<<param_pts[foo][1]<<std::endl;
     }
-    //Apply a ellipsoid parametrization to obtain points in R3
+    //Apply parametrization to obtain points in R3
     int num_pts = sizeof(param_pts)/sizeof(param_pts[0]);
     points->SetNumberOfPoints(num_pts);
     for (int foo = 0; foo<num_pts; foo++){
       double pt[3];
       double p1 = param_pts[foo][0];
       double p2 = param_pts[foo][1];
-      pt[0] = cos(2*M_PI*p1/xtris);
-      pt[1] = sin(2*M_PI*p1/xtris);
+      double cyl_wobble_amp = .1, cyl_wobble_freq=3 , cylrad=1;
+      double rad_now = cyl_wobble_amp * cos(2*M_PI*cyl_wobble_freq*p2/ytris ) + cylrad;
+      pt[0] = rad_now * cos(2*M_PI*p1/xtris);
+      pt[1] = rad_now * sin(2*M_PI*p1/xtris);
       pt[2] = 2*M_PI*p2/ytris;
       points->SetPoint(foo, pt[0], pt[1], pt[2]);
       //std::cout << pt[0] << pt[1] << pt[2] << std::endl;
@@ -179,7 +181,6 @@ vtkSmartPointer<vtkPolyData> build_small_simplicial_example()
   simplicial_complex->BuildLinks();
   return simplicial_complex;
 }
-
 
 vtkSmartPointer<vtkPolyData> compute_minor_curvature_field(vtkSmartPointer<vtkPolyData> surface){
   //std::cout << "Computing minor curvature field." << std::endl;
@@ -229,23 +230,29 @@ vtkSmartPointer<vtkPolyData> compute_minor_curvature_field(vtkSmartPointer<vtkPo
     // The shape operator is symmetric and computed in local edge coordinates.
     // Note that since we only care about direction, the shape operator is not
     // locally normalized so that the curvature is incorrect.
-    double edge_lengths[3], shape00, shape01, shape11;
+    double edge_lengths[3];
     vtkVector3d edges[3];// tang_vects[3];
     int edge_ends[3][3] = {{2,1},{0,2},{1,0}};
-    if(foo==0)std::cout<<"Normal "<< normal[0] << normal[1] << normal[2]<<std::endl;
-    //Iterating over the edges of the triangle
     double angles[3];
+    //Compute the triangle edges
     for(int bar=0; bar<3; bar ++){
       //Edge vectors for orientation 012
       edges[bar] = pts [ edge_ends[bar][0] ] - pts [ edge_ends[bar][1] ];
       //Edge lengths
       edge_lengths[bar]=edges[bar].Norm();
-      if(foo==0)std::cout<< edges[bar][0] << edges[bar][1] << edges[bar][2]<<std::endl;
+      //Find neighboring cell across edge bar
+    }
+    //Compute a local orthonormal basis
+    vtkVector3d orthobase0(edges[0]), orthobase1;
+    orthobase0.Normalize();
+    orthobase1 = normal.Cross(orthobase0);
+    double shape00=0, shape01=0, shape11=0;
+    for(int bar=0; bar<3; bar ++){
       //Find neighboring cell across edge bar
       auto cell_ngb = vtkSmartPointer<vtkIdList>::New();
       surface->GetCellEdgeNeighbors(foo,
         cell_pts->GetId(edge_ends[bar][0]),
-        cell_pts->GetId(edge_ends[bar][0]),
+        cell_pts->GetId(edge_ends[bar][1]),
         cell_ngb);
       //If there is no neighboring cell, i.e. the edge is surface boundary,
       //then we assume the surface is simply flat in that direction.
@@ -253,21 +260,19 @@ vtkSmartPointer<vtkPolyData> compute_minor_curvature_field(vtkSmartPointer<vtkPo
       if(cell_ngb->GetNumberOfIds()>0){
         normals->GetTuple(cell_ngb->GetId(0),temp_n);
         vtkVector3d ngb_normal(temp_n);
-        if(foo==0)std::cout<<"That normal "<< ngb_normal[0]  <<" "<< ngb_normal[1] << " " << ngb_normal[2]<<std::endl;
         //The sign of the angle is taken to agree with right-hand rotation
         //about the edge vector.
         angles[bar] = asin( edges[bar].Dot( normal.Cross(ngb_normal) ) / edge_lengths[bar] ) ;
         angles[bar] = angles[bar]/edge_lengths[bar];
-        if(foo==0)std::cout<<"angle "<< angles[bar]<<std::endl;
-        //This is computed over the basis edge[0]=p2-p1, edge[1]=p0-p2
         //Compute the shape operator matrix entries shape10=shape01
         //but except the eigenvalues are associated with the opposite eigenvectors
         //as in ~H of https://graphics.stanford.edu/courses/cs468-03-fall/Papers/cohen_normalcycle.pdf
+        double dot0bar = orthobase0.Dot(edges[bar]);
+        double dot1bar = orthobase1.Dot(edges[bar]);
+        shape00 += angles[bar] * dot0bar * dot0bar;
+        shape01 += angles[bar] * dot0bar * dot1bar;
+        shape11 += angles[bar] * dot1bar * dot1bar;
       }
-      shape00 = angles[0]+angles[2];
-      shape01 = angles[2];
-      shape11 = angles[1]+angles[2];
-      if(foo==0)std::cout<<"shape "<< shape00<<" "<< shape01<< " " <<shape11 <<std::endl;
     }
   //Compute the minor eigenvalue and the corresponding eigenvector
   double shape_trace=shape00+shape11;
@@ -279,21 +284,37 @@ vtkSmartPointer<vtkPolyData> compute_minor_curvature_field(vtkSmartPointer<vtkPo
   else{
     shape_small_eig=(shape_trace - sqrt(shape_discr))/2.0;
   }
-  if(foo==0) std::cout<< "Middle eigen " <<shape_small_eig <<std::endl;
-  double minor_curv_vect[2] = { shape01 , shape_small_eig-shape00 };
-  //Should this get normalized? There's currently nothing to stop crashing
-  //if the curvature is uniformly 0
-  if(minor_curv_vect[0]*minor_curv_vect[1]){
-    double magni = sqrt(minor_curv_vect[0]*minor_curv_vect[0]+minor_curv_vect[1]*minor_curv_vect[1]);
-    minor_curv_vect[0]*=1/magni;
-    minor_curv_vect[1]*=1/magni;
-  }// }
-  //std::cout << minor_curv_vect[0] << " " << minor_curv_vect[1] <<std::endl;
-  minor_curv_field->SetTuple( foo , minor_curv_vect);
-  vtkVector3d euc_curv_vect = minor_curv_vect[0]*edges[0]+minor_curv_vect[1]*edges[1];
-  double * w = &euc_curv_vect[0];
-  euc_minor_curv_field->SetTuple( foo , w);
+  double ortho_curv_vect[2];
+  if (fabs(shape_small_eig-shape00) > fabs(shape_small_eig-shape11)){
+    ortho_curv_vect[0] = shape01;
+    ortho_curv_vect[1] = shape_small_eig-shape00;
   }
+  else{
+    ortho_curv_vect[0] = shape_small_eig-shape11;
+    ortho_curv_vect[1] = shape01;
+  }
+  //Should this get locally normalized normalized by area?
+  if(ortho_curv_vect[0]*ortho_curv_vect[1]){
+    double magni = sqrt(ortho_curv_vect[0]*ortho_curv_vect[0]+ortho_curv_vect[1]*ortho_curv_vect[1]);
+    ortho_curv_vect[0]*=shape_small_eig/magni;
+    ortho_curv_vect[1]*=shape_small_eig/magni;
+  }
+  // }
+  //std::cout << minor_curv_vect[0] << " " << minor_curv_vect[1] <<std::endl;
+  //Store the vector in the standard R3 basis
+  vtkVector3d euc_curv_vect =  ortho_curv_vect[0] * orthobase0 + ortho_curv_vect[1] * orthobase1 ;
+  euc_minor_curv_field->SetTuple3( foo , euc_curv_vect[0], euc_curv_vect[1], euc_curv_vect[2]);
+  //Also store the vector in the local edge basis e0=p2-p1 and p1=p0-p2
+  double e00 = edges[0].Dot(edges[0]), e01 = edges[0].Dot(edges[1]), e11 = edges[1].Dot(edges[1]);
+  double edet = e00*e11-e01*e01;
+  double e0dw = edges[0].Dot(euc_curv_vect)  , e1dw = edges[1].Dot(euc_curv_vect) ;
+  double minor_curv_vect[2] ={
+    (e11*e0dw - e01 * e1dw) /edet,
+    (e00*e1dw - e01 * e0dw) /edet,
+  };
+  minor_curv_field->SetTuple( foo , minor_curv_vect);
+  }
+
   //Looks noisey. Try a uniform window blur on cell neighbors.
   //There should be a fast way to do this with a convolution filter....
 
@@ -352,7 +373,7 @@ int main(int argc, const char* argv[])
 {
   const char* output_name;
   auto surface= vtkSmartPointer<vtkPolyData>::New();
-  bool is_input = false;
+  bool is_input = true;
   if (is_input) {
     if (argc < 3) {
       fprintf(stderr,"Usage: %s <input> [<output.vtp>] \n",argv[0]);
