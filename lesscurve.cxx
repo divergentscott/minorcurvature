@@ -293,16 +293,19 @@ vtkSmartPointer<vtkPolyData> compute_minor_curvature_field(vtkSmartPointer<vtkPo
     ortho_curv_vect[0] = shape_small_eig-shape11;
     ortho_curv_vect[1] = shape01;
   }
-  //Should this get locally normalized normalized by area?
+  //What's the right normalization for the field?
   if(ortho_curv_vect[0]*ortho_curv_vect[1]){
     double magni = sqrt(ortho_curv_vect[0]*ortho_curv_vect[0]+ortho_curv_vect[1]*ortho_curv_vect[1]);
+    //magni *= .001*( edges[0].Cross(edges[1]) ).Norm();
     ortho_curv_vect[0]*=shape_small_eig/magni;
     ortho_curv_vect[1]*=shape_small_eig/magni;
   }
-  // }
-  //std::cout << minor_curv_vect[0] << " " << minor_curv_vect[1] <<std::endl;
   //Store the vector in the standard R3 basis
   vtkVector3d euc_curv_vect =  ortho_curv_vect[0] * orthobase0 + ortho_curv_vect[1] * orthobase1 ;
+    //Hacky attempt at local continuity
+  if(euc_curv_vect[2] < 0){
+    euc_curv_vect = -1 * euc_curv_vect;
+  }
   euc_minor_curv_field->SetTuple3( foo , euc_curv_vect[0], euc_curv_vect[1], euc_curv_vect[2]);
   //Also store the vector in the local edge basis e0=p2-p1 and p1=p0-p2
   double e00 = edges[0].Dot(edges[0]), e01 = edges[0].Dot(edges[1]), e11 = edges[1].Dot(edges[1]);
