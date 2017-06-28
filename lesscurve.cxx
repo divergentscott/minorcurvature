@@ -7,15 +7,18 @@
 #include <vtkSTLReader.h>
 #include "vtkSmartPointer.h"
 #include "vtkIdTypeArray.h"
-#include "vtkFloatArray.h"
 #include "vtkPolyDataNormals.h"
 #include "vtkCellData.h"
+#include "vtkPointData.h"
 #include "vtkDataArray.h"
 #include <vtkXMLPolyDataWriter.h>
 #include <vtkVector.h>
 #include <vtkOBJReader.h>
 #include <vtkXMLPolyDataReader.h>
 #include <vtkUnstructuredGridReader.h>
+#include <Eigen/Sparse>
+
+const char* minor_name="MinorCurvatureDirectionField";
 
 vtkVector3d operator+(vtkVector3d u, vtkVector3d v){
   vtkVector3d w;
@@ -45,7 +48,7 @@ template <typename T> int sgn(T val) {
 
 vtkSmartPointer<vtkPolyData> build_small_simplicial_example()
 {
-  std::string example_name ("cylinder"); //"simple" "simple2" "cylinder"
+  std::string example_name ("cylinder"); //"simple" "simple2" "cylinder" "grid"
   auto points = vtkSmartPointer<vtkPoints>::New();
   auto triangles = vtkSmartPointer<vtkCellArray>::New();
 
@@ -70,7 +73,6 @@ vtkSmartPointer<vtkPolyData> build_small_simplicial_example()
       pt[1] = 4*sin(p1)*cos(p2);
       pt[2] = 3*sin(p2);
       points->SetPoint(foo, pt[0], pt[1], pt[2]);
-      //std::cout << pt[0] << pt[1] << pt[2] << std::endl;
     }
     int cellList[4][3] = {
       {0,1,3},
@@ -88,7 +90,7 @@ vtkSmartPointer<vtkPolyData> build_small_simplicial_example()
 
   if (example_name.compare("simple2") == 0)
   {
-    double angle0 = 0.0, angle1 = 0.0 , angle2 = M_PI/4;
+    double angle0 = 0.0, angle1 = M_PI/6 , angle2 = 0.0;
     double pt_pos[6][3] = {
       {0,0,0},
       {1,0,0},
@@ -102,7 +104,6 @@ vtkSmartPointer<vtkPolyData> build_small_simplicial_example()
     for (vtkIdType foo = 0; foo < num_pts; foo++) {
       double p0 = pt_pos[foo][0], p1 = pt_pos[foo][1], p2 = pt_pos[foo][2];
       points->SetPoint(foo, p0, p1, p2);
-      // std::cout << points->GetNumberOfPoints() << " " << pt_pos[foo][0] << pt_pos[foo][1] << pt_pos[foo][2] << std::endl;
     }
     int cellList[4][3] = {
       {0,1,2},
@@ -147,7 +148,6 @@ vtkSmartPointer<vtkPolyData> build_small_simplicial_example()
       int pt_row = foo/xtris;
       param_pts[foo][0]=pt_col + 0.5*pt_row;
       param_pts[foo][1]=y_shift*pt_row;
-      //std::cout<<pt_col<<pt_row<<" "<<param_pts[foo][0]<<" "<<param_pts[foo][1]<<std::endl;
     }
     //Apply parametrization to obtain points in R3
     int num_pts = sizeof(param_pts)/sizeof(param_pts[0]);
@@ -162,14 +162,52 @@ vtkSmartPointer<vtkPolyData> build_small_simplicial_example()
       pt[1] = rad_now * sin(2*M_PI*p1/xtris);
       pt[2] = 2*M_PI*p2/ytris;
       points->SetPoint(foo, pt[0], pt[1], pt[2]);
-      //std::cout << pt[0] << pt[1] << pt[2] << std::endl;
     }
     for(int foo = 0; foo<sizeof(cell_list)/sizeof(cell_list[0]); foo++){
       triangles->InsertNextCell(3);
-      //std::cout<<std::endl<<"Build cell" <<foo;
       for(int bar = 0; bar<sizeof(cell_list[0])/sizeof(cell_list[0][0]); bar++){
         triangles->InsertCellPoint(cell_list[foo][bar]);
-        //std::cout<<"point "<< cell_list[foo][bar];
+      }
+    }
+  }
+  if (example_name.compare("grid") == 0)
+  {
+    int gridx=3;
+    int gridy=1;
+    int num_pts=(gridx+1)*(gridy+1);
+    double pt_pos[num_pts][3];
+    for(int foo=0; foo<num_pts; foo++){
+      pt_pos[foo][0] = (foo % (gridx+1));
+      pt_pos[foo][1] = floor(foo / (gridx+1) );
+      pt_pos[foo][2] = 0;
+    }
+    points->SetNumberOfPoints(num_pts);
+    for (vtkIdType foo = 0; foo < num_pts; foo++) {
+      double p0 = pt_pos[foo][0], p1 = pt_pos[foo][1], p2 = pt_pos[foo][2];
+      points->SetPoint(foo, p0, p1, p2);
+    }
+    int num_triang = 2*gridx*gridy;
+    int cellList[num_triang][3];
+    for(int foo=0; foo<num_triang; foo++){
+      int is_up = (foo+1) % 2;
+      int sqre = foo / 2;
+      int xplace = ( foo / 2 ) % (gridx);
+      int yplace = ( ( foo/ 2 ) / (gridx));
+      if(is_up){
+        cellList[foo][0] = xplace + (gridx+1) * yplace;
+        cellList[foo][1] = 1+xplace + (gridx+1) * yplace;
+        cellList[foo][2] = xplace + (gridx+1) * (1+yplace);
+      }
+      else{
+        cellList[foo][1] = 1+xplace + (gridx+1) * (1+yplace);
+        cellList[foo][0] = 1+xplace + (gridx+1) * yplace;
+        cellList[foo][2] = xplace + (gridx+1) * (1+yplace);
+      }
+    }
+    for(int foo = 0; foo<num_triang; foo++){
+      triangles->InsertNextCell(3);
+      for(int bar = 0; bar<3; bar++){
+        triangles->InsertCellPoint(cellList[foo][bar]);
       }
     }
   }
@@ -183,7 +221,6 @@ vtkSmartPointer<vtkPolyData> build_small_simplicial_example()
 }
 
 vtkSmartPointer<vtkPolyData> compute_minor_curvature_field(vtkSmartPointer<vtkPolyData> surface){
-  //std::cout << "Computing minor curvature field." << std::endl;
   vtkDataArray *normals=surface->GetCellData()->GetNormals();
   //Initialize memory for the minor curvautre field.
   //The field is defined per triangle of the surface.
@@ -191,25 +228,22 @@ vtkSmartPointer<vtkPolyData> compute_minor_curvature_field(vtkSmartPointer<vtkPo
   //magintude curvature.
   //The field is expressed over in the barycentric coordinate basis
   // side2=p1-p0 and side1=p2-p0 for triangle /_p0p1p2
-  const char* minor_name="MinorCurvatureDirectionField";
-  auto minor_curv_field = vtkSmartPointer<vtkFloatArray>::New();
+  auto minor_curv_field = vtkSmartPointer<vtkDoubleArray>::New();
   minor_curv_field->SetNumberOfComponents(2);
   minor_curv_field->SetNumberOfTuples(surface->GetNumberOfCells());
   minor_curv_field->SetName(minor_name);
 
   //The minor curvature field here is expressed over the standar basis in RR3
   const char* euc_name="3SpaceMinorCurvatureDirectionField";
-  auto euc_minor_curv_field = vtkSmartPointer<vtkFloatArray>::New();
+  auto euc_minor_curv_field = vtkSmartPointer<vtkDoubleArray>::New();
   euc_minor_curv_field->SetNumberOfComponents(3);
   euc_minor_curv_field->SetNumberOfTuples(surface->GetNumberOfCells());
   euc_minor_curv_field->SetName(euc_name);
 
   //Loop through the cells to compute the shape operator locally and extract
   //the minor curvature direction
- //std::cout<<"Inside curve field, I see cells numbering: "<< surface->GetNumberOfCells() << std::endl;
 
   for(vtkIdType foo=0; foo< surface->GetNumberOfCells(); foo++){
-    ////std::cout<<"Working Cell "<< foo << std::endl;
     //Get the points as vectors
     double temp_pts[3][3];
     vtkVector3d pts[3];
@@ -302,7 +336,8 @@ vtkSmartPointer<vtkPolyData> compute_minor_curvature_field(vtkSmartPointer<vtkPo
   }
   //Store the vector in the standard R3 basis
   vtkVector3d euc_curv_vect =  ortho_curv_vect[0] * orthobase0 + ortho_curv_vect[1] * orthobase1 ;
-    //Hacky attempt at local continuity
+  //vtkVector3d euc_curv_vect={1.0,4.0,0.0};
+    //Hacky attempt at semi continuity by choosing rando hemisphere to rep RealProjective2Space
   if(euc_curv_vect[2] < 0){
     euc_curv_vect = -1 * euc_curv_vect;
   }
@@ -316,18 +351,21 @@ vtkSmartPointer<vtkPolyData> compute_minor_curvature_field(vtkSmartPointer<vtkPo
     (e00*e1dw - e01 * e0dw) /edet,
   };
   minor_curv_field->SetTuple( foo , minor_curv_vect);
+  //std::cout<<"cell "<< foo <<std::endl;
+  //std::cout<<"std base "<<" "<<euc_curv_vect[0]<<" "<<euc_curv_vect[1]<<std::endl;
+  //std::cout<<"edgebase "<<" "<<minor_curv_vect[0]<<" "<<minor_curv_vect[1]<<std::endl;
   }
 
   //Looks noisey. Try a uniform window blur on cell neighbors.
   //There should be a fast way to do this with a convolution filter....
 
-  const char* blur_name="BlurredField";
-  auto blurred_field = vtkSmartPointer<vtkFloatArray>::New();
-  blurred_field->SetNumberOfComponents(3);
-  blurred_field->SetNumberOfTuples(surface->GetNumberOfCells());
-  blurred_field->SetName(blur_name);
   bool apply_blur = false;
   if(apply_blur){
+    const char* blur_name="BlurredField";
+    auto blurred_field = vtkSmartPointer<vtkDoubleArray>::New();
+    blurred_field->SetNumberOfComponents(3);
+    blurred_field->SetNumberOfTuples(surface->GetNumberOfCells());
+    blurred_field->SetName(blur_name);
     for(int foo = 0; foo<surface->GetNumberOfCells(); foo++){
       double tempf[3];
       euc_minor_curv_field->GetTuple( foo , tempf);
@@ -350,6 +388,9 @@ vtkSmartPointer<vtkPolyData> compute_minor_curvature_field(vtkSmartPointer<vtkPo
       field_here.Normalize();
       double * w = &field_here[0];
       blurred_field->SetTuple(foo, w);
+      if (surface->GetCellData()->HasArray(blur_name))
+        surface->GetCellData()->RemoveArray(blur_name);
+      surface->GetCellData()->AddArray(blurred_field);
     }
   }
 
@@ -362,12 +403,6 @@ vtkSmartPointer<vtkPolyData> compute_minor_curvature_field(vtkSmartPointer<vtkPo
 
   surface->GetCellData()->AddArray(minor_curv_field);
   surface->GetCellData()->AddArray(euc_minor_curv_field);
-
-  if(apply_blur){
-    if (surface->GetCellData()->HasArray(blur_name))
-      surface->GetCellData()->RemoveArray(blur_name);
-    surface->GetCellData()->AddArray(blurred_field);
-  }
 
   return surface;
 }
@@ -427,7 +462,6 @@ int main(int argc, const char* argv[])
     output_name = "bongo.vtp";
     int g;
     surface = build_small_simplicial_example();
-    // std::cout<<"After build cells numbering "<<surface->GetNumberOfCells() << std::endl;
   }
 
   // auto surface = vtkSmartPointer<vtkPolyData>::New();
@@ -439,6 +473,7 @@ int main(int argc, const char* argv[])
   auto normalGenerator = vtkSmartPointer<vtkPolyDataNormals>::New();
 
   //Compute normal vectors for all cells
+  std::cout<<"Computing normals."<<std::endl;
   normalGenerator->SetInputData(surface);
   normalGenerator->ComputePointNormalsOff();
   normalGenerator->ComputeCellNormalsOn();
@@ -448,8 +483,79 @@ int main(int argc, const char* argv[])
   surface = normalGenerator->GetOutput();
   //surface->DeleteCells();
   surface->BuildLinks();
+  std::cout<<"Computing minor principle curvature field."<<std::endl;
   surface = compute_minor_curvature_field(surface);
 
+  //Contstruct a function u: {mesh points}->RR with gradient ~= minor curvature field
+  int num_pts = surface->GetNumberOfPoints();
+  auto cell_pts = vtkSmartPointer<vtkIdList>::New();
+  int num_cells = surface->GetNumberOfCells();
+  int edge_ends[3][3] = {{2,1},{0,2},{1,0}};
+  //Construct the discrete gradient matrix for the surface
+  //The size is slightly larger to get constraint u(0)=0
+  std::vector< Eigen::Triplet<double> > grad_entrylist;
+  grad_entrylist.reserve(4 * num_cells+1);
+  std::vector< Eigen::Triplet<double> > curv_entrylist;
+  curv_entrylist.reserve(2 * num_cells+1);
+  double curv_entry[2];
+  vtkSmartPointer<vtkDataArray> curv_data = surface->GetCellData()->GetArray(minor_name);
+  //Porting data from vtkArray to a Eigen::Matrix
+  //This should probably be done when you compute it in the first place
+  for(int foo=0; foo< num_cells; foo++){
+    surface->GetCellPoints(foo,cell_pts);
+    int pt0=cell_pts->GetId(0), pt1=cell_pts->GetId(1), pt2=cell_pts->GetId(2);
+    //std::cout<<foo<<"cell's pts"<<pt0<<pt1<<pt2<<std::endl;
+    curv_data->GetTuple(foo,curv_entry);
+    curv_entrylist.push_back( Eigen::Triplet<double> (2*foo, 0, curv_entry[0]) );
+    curv_entrylist.push_back( Eigen::Triplet<double> (2*foo+1, 0, curv_entry[1]) );
+    //The graditent per cell has component0 = u(p2)-u(p1)
+    //and component1 = u(p0)-u(p2)
+    grad_entrylist.push_back( Eigen::Triplet<double> (2*foo, pt2, 1) );
+    grad_entrylist.push_back( Eigen::Triplet<double> (2*foo, pt1, -1) );
+    grad_entrylist.push_back( Eigen::Triplet<double> (2*foo+1, pt0, 1) );
+    grad_entrylist.push_back( Eigen::Triplet<double> (2*foo+1, pt2, -1) );
+  }
+  //Add constraint u(0)=0
+  grad_entrylist.push_back( Eigen::Triplet<double> (2*num_cells, 0, 1) );
+  curv_entrylist.push_back( Eigen::Triplet<double> (2*num_cells, 0, 0) );
+  //Build Matrix
+  Eigen::SparseMatrix<double> surf_gradient( 2*num_cells + 1, num_pts);
+  surf_gradient.setFromTriplets(grad_entrylist.begin(), grad_entrylist.end());
+  //Build target vector i.e. the curvature field
+  Eigen::SparseMatrix<double> curv_field( 2*num_cells + 1, 1);
+  curv_field.setFromTriplets(curv_entrylist.begin(), curv_entrylist.end());
+
+  Eigen::LeastSquaresConjugateGradient< Eigen::SparseMatrix<double> > solver;
+  std::cout<<"Factoring surface gradient."<<std::endl;
+  solver.compute(surf_gradient);
+  Eigen::SparseMatrix<double> u_param(num_pts,1);
+  std::cout<<"Constructing tubular potential function."<<std::endl;
+  u_param = solver.solve(curv_field);
+
+  bool verbose = false;
+  if(verbose){
+    std::cout<<std::endl;
+    std::cout<<u_param<<std::endl;
+    std::cout<<std::endl;
+    std::cout<<surf_gradient;
+    std::cout<<curv_field;
+    std::cout<<std::endl;
+    std::cout<<u_param<<std::endl;
+    std::cout<<std::endl;
+    }
+  std::cout<<"Writing file.";
+  const char* tube_param_name="Tubular Parametrization";
+  auto tube_param = vtkSmartPointer<vtkDoubleArray>::New();
+  tube_param->SetNumberOfComponents(1);
+  tube_param->SetNumberOfTuples(num_pts);
+  tube_param->SetName(tube_param_name);
+  for(int foo=0; foo<num_pts; foo++){
+    tube_param->SetTuple1(foo, u_param.coeffRef(foo,0));
+  }
+  surface->GetPointData()->AddArray(tube_param);
+
+
+  //File output
   vtkSmartPointer<vtkXMLPolyDataWriter> writer = vtkSmartPointer<vtkXMLPolyDataWriter>::New();
   writer->SetFileName(output_name);
   writer->SetInputData(surface);
