@@ -17,6 +17,7 @@
 #include <vtkXMLPolyDataReader.h>
 #include <vtkUnstructuredGridReader.h>
 #include <Eigen/Sparse>
+#include <time.h>
 
 const char* minor_name="MinorCurvatureDirectionField";
 
@@ -120,6 +121,7 @@ vtkSmartPointer<vtkPolyData> build_small_simplicial_example()
   }
   if (example_name.compare("cylinder") == 0)
   {
+    double cyl_wobble_amp = .1, cyl_wobble_freq=2 , cylrad=1;
     int xtris = 70;
     int ytris = 70;
     double param_pts[xtris*(ytris+1)][2];
@@ -156,7 +158,6 @@ vtkSmartPointer<vtkPolyData> build_small_simplicial_example()
       double pt[3];
       double p1 = param_pts[foo][0];
       double p2 = param_pts[foo][1];
-      double cyl_wobble_amp = .1, cyl_wobble_freq=3 , cylrad=1;
       double rad_now = cyl_wobble_amp * cos(2*M_PI*cyl_wobble_freq*p2/ytris ) + cylrad;
       pt[0] = rad_now * cos(2*M_PI*p1/xtris);
       pt[1] = rad_now * sin(2*M_PI*p1/xtris);
@@ -355,10 +356,8 @@ vtkSmartPointer<vtkPolyData> compute_minor_curvature_field(vtkSmartPointer<vtkPo
   //std::cout<<"std base "<<" "<<euc_curv_vect[0]<<" "<<euc_curv_vect[1]<<std::endl;
   //std::cout<<"edgebase "<<" "<<minor_curv_vect[0]<<" "<<minor_curv_vect[1]<<std::endl;
   }
-
   //Looks noisey. Try a uniform window blur on cell neighbors.
   //There should be a fast way to do this with a convolution filter....
-
   bool apply_blur = false;
   if(apply_blur){
     const char* blur_name="BlurredField";
@@ -404,6 +403,80 @@ vtkSmartPointer<vtkPolyData> compute_minor_curvature_field(vtkSmartPointer<vtkPo
   surface->GetCellData()->AddArray(minor_curv_field);
   surface->GetCellData()->AddArray(euc_minor_curv_field);
 
+  return surface;
+}
+
+vtkSmartPointer<vtkPolyData> compute_tubular_parametrization(vtkSmartPointer<vtkPolyData> surface){
+  //Contstruct a function u: {mesh points}->RR with gradient ~= minor curvature field
+  int num_pts = surface->GetNumberOfPoints();
+  auto cell_pts = vtkSmartPointer<vtkIdList>::New();
+  int num_cells = surface->GetNumberOfCells();
+  //Construct the discrete gradient matrix for the surface
+  //The size is slightly larger to get constraint u(0)=0
+  std::vector< Eigen::Triplet<double> > grad_entrylist;
+  grad_entrylist.reserve(4 * num_cells+1);
+  std::vector< Eigen::Triplet<double> > curv_entrylist;
+  curv_entrylist.reserve(2 * num_cells+1);
+  double curv_entry[2];
+  vtkSmartPointer<vtkDataArray> curv_data = surface->GetCellData()->GetArray(minor_name);
+  //Porting data from vtkArray to a Eigen::Matrix
+  //This should probably be done when you compute it in the first place
+  for(int foo=0; foo< num_cells; foo++){
+    surface->GetCellPoints(foo,cell_pts);
+    int pt0=cell_pts->GetId(0), pt1=cell_pts->GetId(1), pt2=cell_pts->GetId(2);
+    //std::cout<<foo<<"cell's pts"<<pt0<<pt1<<pt2<<std::endl;
+    curv_data->GetTuple(foo,curv_entry);
+    curv_entrylist.push_back( Eigen::Triplet<double> (2*foo, 0, curv_entry[0]) );
+    curv_entrylist.push_back( Eigen::Triplet<double> (2*foo+1, 0, curv_entry[1]) );
+    //The graditent per cell has component0 = u(p2)-u(p1)
+    //and component1 = u(p0)-u(p2)
+    grad_entrylist.push_back( Eigen::Triplet<double> (2*foo, pt2, 1) );
+    grad_entrylist.push_back( Eigen::Triplet<double> (2*foo, pt1, -1) );
+    grad_entrylist.push_back( Eigen::Triplet<double> (2*foo+1, pt0, 1) );
+    grad_entrylist.push_back( Eigen::Triplet<double> (2*foo+1, pt2, -1) );
+  }
+  //Add constraint u(0)=0
+  grad_entrylist.push_back( Eigen::Triplet<double> (2*num_cells, 0, 1) );
+  curv_entrylist.push_back( Eigen::Triplet<double> (2*num_cells, 0, 0) );
+  //Build Matrix
+  Eigen::SparseMatrix<double> surf_gradient( 2*num_cells + 1, num_pts);
+  surf_gradient.setFromTriplets(grad_entrylist.begin(), grad_entrylist.end());
+  //Build target vector i.e. the curvature field
+  Eigen::SparseMatrix<double> curv_field( 2*num_cells + 1, 1);
+  curv_field.setFromTriplets(curv_entrylist.begin(), curv_entrylist.end());
+
+  Eigen::LeastSquaresConjugateGradient< Eigen::SparseMatrix<double> > solver;
+  std::cout<<"Factoring surface gradient."<<std::endl;
+  solver.compute(surf_gradient);
+  Eigen::SparseMatrix<double> u_param(num_pts,1);
+  std::cout<<"Constructing tubular potential function."<<std::endl;
+  time_t time1,time2;
+  time1 = time(0);
+  u_param = solver.solve(curv_field);
+  time2 = time(0);
+  int it_took = difftime(time2,time1);
+  std::cout<<"Integration finished in " << it_took/60 << " min and " << it_took%60 << " sec" <<std::endl;
+
+  bool verbose = false;
+  if(verbose){
+    std::cout<<std::endl;
+    std::cout<<u_param<<std::endl;
+    std::cout<<std::endl;
+    std::cout<<surf_gradient;
+    std::cout<<curv_field;
+    std::cout<<std::endl;
+    std::cout<<u_param<<std::endl;
+    std::cout<<std::endl;
+    }
+  const char* tube_param_name="Tubular Parametrization";
+  auto tube_param = vtkSmartPointer<vtkDoubleArray>::New();
+  tube_param->SetNumberOfComponents(1);
+  tube_param->SetNumberOfTuples(num_pts);
+  tube_param->SetName(tube_param_name);
+  for(int foo=0; foo<num_pts; foo++){
+    tube_param->SetTuple1(foo, u_param.coeffRef(foo,0));
+  }
+  surface->GetPointData()->AddArray(tube_param);
   return surface;
 }
 
@@ -483,79 +556,14 @@ int main(int argc, const char* argv[])
   surface = normalGenerator->GetOutput();
   //surface->DeleteCells();
   surface->BuildLinks();
-  std::cout<<"Computing minor principle curvature field."<<std::endl;
+  std::cout<<"Computing minor principle curvature field. "<<std::endl;
+
   surface = compute_minor_curvature_field(surface);
 
-  //Contstruct a function u: {mesh points}->RR with gradient ~= minor curvature field
-  int num_pts = surface->GetNumberOfPoints();
-  auto cell_pts = vtkSmartPointer<vtkIdList>::New();
-  int num_cells = surface->GetNumberOfCells();
-  int edge_ends[3][3] = {{2,1},{0,2},{1,0}};
-  //Construct the discrete gradient matrix for the surface
-  //The size is slightly larger to get constraint u(0)=0
-  std::vector< Eigen::Triplet<double> > grad_entrylist;
-  grad_entrylist.reserve(4 * num_cells+1);
-  std::vector< Eigen::Triplet<double> > curv_entrylist;
-  curv_entrylist.reserve(2 * num_cells+1);
-  double curv_entry[2];
-  vtkSmartPointer<vtkDataArray> curv_data = surface->GetCellData()->GetArray(minor_name);
-  //Porting data from vtkArray to a Eigen::Matrix
-  //This should probably be done when you compute it in the first place
-  for(int foo=0; foo< num_cells; foo++){
-    surface->GetCellPoints(foo,cell_pts);
-    int pt0=cell_pts->GetId(0), pt1=cell_pts->GetId(1), pt2=cell_pts->GetId(2);
-    //std::cout<<foo<<"cell's pts"<<pt0<<pt1<<pt2<<std::endl;
-    curv_data->GetTuple(foo,curv_entry);
-    curv_entrylist.push_back( Eigen::Triplet<double> (2*foo, 0, curv_entry[0]) );
-    curv_entrylist.push_back( Eigen::Triplet<double> (2*foo+1, 0, curv_entry[1]) );
-    //The graditent per cell has component0 = u(p2)-u(p1)
-    //and component1 = u(p0)-u(p2)
-    grad_entrylist.push_back( Eigen::Triplet<double> (2*foo, pt2, 1) );
-    grad_entrylist.push_back( Eigen::Triplet<double> (2*foo, pt1, -1) );
-    grad_entrylist.push_back( Eigen::Triplet<double> (2*foo+1, pt0, 1) );
-    grad_entrylist.push_back( Eigen::Triplet<double> (2*foo+1, pt2, -1) );
-  }
-  //Add constraint u(0)=0
-  grad_entrylist.push_back( Eigen::Triplet<double> (2*num_cells, 0, 1) );
-  curv_entrylist.push_back( Eigen::Triplet<double> (2*num_cells, 0, 0) );
-  //Build Matrix
-  Eigen::SparseMatrix<double> surf_gradient( 2*num_cells + 1, num_pts);
-  surf_gradient.setFromTriplets(grad_entrylist.begin(), grad_entrylist.end());
-  //Build target vector i.e. the curvature field
-  Eigen::SparseMatrix<double> curv_field( 2*num_cells + 1, 1);
-  curv_field.setFromTriplets(curv_entrylist.begin(), curv_entrylist.end());
-
-  Eigen::LeastSquaresConjugateGradient< Eigen::SparseMatrix<double> > solver;
-  std::cout<<"Factoring surface gradient."<<std::endl;
-  solver.compute(surf_gradient);
-  Eigen::SparseMatrix<double> u_param(num_pts,1);
-  std::cout<<"Constructing tubular potential function."<<std::endl;
-  u_param = solver.solve(curv_field);
-
-  bool verbose = false;
-  if(verbose){
-    std::cout<<std::endl;
-    std::cout<<u_param<<std::endl;
-    std::cout<<std::endl;
-    std::cout<<surf_gradient;
-    std::cout<<curv_field;
-    std::cout<<std::endl;
-    std::cout<<u_param<<std::endl;
-    std::cout<<std::endl;
-    }
-  std::cout<<"Writing file.";
-  const char* tube_param_name="Tubular Parametrization";
-  auto tube_param = vtkSmartPointer<vtkDoubleArray>::New();
-  tube_param->SetNumberOfComponents(1);
-  tube_param->SetNumberOfTuples(num_pts);
-  tube_param->SetName(tube_param_name);
-  for(int foo=0; foo<num_pts; foo++){
-    tube_param->SetTuple1(foo, u_param.coeffRef(foo,0));
-  }
-  surface->GetPointData()->AddArray(tube_param);
-
+  surface = compute_tubular_parametrization(surface);
 
   //File output
+  std::cout<<"Writing file."<<std::endl;
   vtkSmartPointer<vtkXMLPolyDataWriter> writer = vtkSmartPointer<vtkXMLPolyDataWriter>::New();
   writer->SetFileName(output_name);
   writer->SetInputData(surface);
