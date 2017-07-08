@@ -7,6 +7,7 @@ find_package(VTK REQUIRED)
 find_package(Eigen3 3.3 REQUIRED NO_MODULE)
 include(${VTK_USE_FILE})
 
+
 add_executable(lesscurve MACOSX_BUNDLE lesscurve.cxx)
 #
   if(VTK_LIBRARIES)
