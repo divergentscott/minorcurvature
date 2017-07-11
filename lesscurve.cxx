@@ -20,10 +20,14 @@
 #include <Eigen/Core>
 #include <time.h>
 #include <queue>
+#include <set>
+
+using namespace std;
 
 const char* minor_name="Local Coord Minor Curvature Direction";
-const char* euc_name="Minor Curvature Direction";
-const char* euc_major_name="Major Curvature Direction";
+const char* euc_minor_name="Minor Curvature Direction";
+const char* curvatures_name="Curvatures";
+const double INV_ROOT_2 = 1/sqrt(2);
 
 
 vtkVector3d operator+(vtkVector3d u, vtkVector3d v){
@@ -51,6 +55,28 @@ template <typename T> int sgn(T val) {
     return (T(0) < val) - (val < T(0));
 }
 
+
+
+
+std::vector<int> ngb_triangles( int center_tri, vtkSmartPointer<vtkPolyData> surface){
+  //vtk needs a good way to call the adjacent cells
+  std::vector<int> ngbs;
+  auto cell_pts = vtkSmartPointer<vtkIdList>::New();
+  surface->GetCellPoints( center_tri , cell_pts);
+  for(int bar=0; bar<3; bar ++){
+    //Find neighboring cell across edge bar
+    auto cell_ngb_wrap = vtkSmartPointer<vtkIdList>::New();
+    surface->GetCellEdgeNeighbors( center_tri ,
+      cell_pts->GetId( (bar+2)%3 ),
+      cell_pts->GetId( (bar+1)%3 ),
+      cell_ngb_wrap);
+    if( cell_ngb_wrap->GetNumberOfIds()>0 ){
+      int cell_ngb = cell_ngb_wrap->GetId(0);
+      ngbs.push_back(cell_ngb);
+    }
+  }
+  return ngbs;
+}
 
 vtkSmartPointer<vtkPolyData> build_small_simplicial_example()
 {
@@ -226,6 +252,7 @@ vtkSmartPointer<vtkPolyData> build_small_simplicial_example()
   return simplicial_complex;
 }
 
+
 //Define a structure for priority queue
 struct cellPrior{
   int id;
@@ -237,53 +264,50 @@ bool operator<(const cellPrior& cell1, const cellPrior& cell2){
   return fabs(cell1.confidence) < fabs(cell2.confidence);
 }
 //Function to align the vector field consistently
-vtkSmartPointer<vtkPolyData> compute_flip_scheme(vtkSmartPointer<vtkPolyData> surface){
-  // //Try flipping cell vectors via bredthfirst flowing out from center?
+vtkSmartPointer<vtkPolyData> allign_field(vtkSmartPointer<vtkPolyData> surface){
+
   int const num_surf_cells = surface->GetNumberOfCells();
   auto cell_order = vtkSmartPointer<vtkIntArray>::New();
   cell_order->SetNumberOfComponents(1);
   cell_order->SetNumberOfTuples( num_surf_cells );
   cell_order->SetName("Cell Order");
 
-  auto suggest_flip = vtkSmartPointer<vtkIntArray>::New();
-  suggest_flip->SetNumberOfComponents(1);
-  suggest_flip->SetNumberOfTuples( num_surf_cells );
-  suggest_flip->SetName("Flip These");
+  auto alligned_patch = vtkSmartPointer<vtkIntArray>::New();
+  alligned_patch->SetNumberOfComponents(1);
+  alligned_patch->SetNumberOfTuples( num_surf_cells );
+  alligned_patch->SetName("Concurrence Patch");
 
-  vtkSmartPointer<vtkDataArray> euc_field = surface->GetCellData()->GetArray(euc_name);
-  vtkSmartPointer<vtkDataArray> surf_field = surface->GetCellData()->GetArray(minor_name);
-  //Iterate through cells out from cell 0
-  int counter = 0;
+  vtkSmartPointer<vtkDataArray> euc_field = surface->GetCellData()->GetArray(euc_minor_name);
+  vtkSmartPointer<vtkDataArray> minor_curv_field = surface->GetCellData()->GetArray(minor_name);
+  vtkSmartPointer<vtkDataArray> curvatures = surface->GetCellData()->GetArray(curvatures_name);
+
+  //Partition the surface into patches where the field aligns locally within 45 degrees
+  int flip_scheme[num_surf_cells];
+  int cell_counter = 0;
+  int patch_count = -1;
   bool cell_decided[num_surf_cells];
   std::priority_queue< cellPrior > cell_que;
-  cell_que.push( cellPrior{0,1} );
   for(int foo=0; foo<num_surf_cells; foo++){
     cell_decided[foo] = false;
+    flip_scheme[foo]=0;
   }
-  while(!cell_que.empty()){
-    cellPrior current = cell_que.top();
-    cell_que.pop();
-    counter++;
-    cell_order->SetTuple1( current.id, counter);
-    //Decide if the cell should flip.
-    if(!cell_decided[current.id]){
-      if (current.confidence < 0) suggest_flip->SetTuple1(current.id,1);
-      else suggest_flip->SetTuple1(current.id,0);
-      cell_decided[current.id]=true;
-
-      //Look for neighbors
-      auto cell_pts = vtkSmartPointer<vtkIdList>::New();
-      surface->GetCellPoints( current.id , cell_pts);
-      for(int bar=0; bar<3; bar ++){
-        //Find neighboring cell across edge bar
-        auto cell_ngb_wrap = vtkSmartPointer<vtkIdList>::New();
-        surface->GetCellEdgeNeighbors( current.id ,
-          cell_pts->GetId( (bar+2)%3 ),
-          cell_pts->GetId( (bar+1)%3 ),
-          cell_ngb_wrap);
-        if( cell_ngb_wrap->GetNumberOfIds()>0 ){
-          int cell_ngb = cell_ngb_wrap->GetId(0);
-          if (!cell_decided[cell_ngb]){
+  //Choose a cell, grow a patch until no neighboring cells align well, then grow another patch.
+  for(int foo=0; foo<num_surf_cells; foo++){
+    if( !cell_decided[foo] ){
+      patch_count++;
+      cell_que.push( cellPrior{foo,1} );
+      while(!cell_que.empty()){
+        cellPrior current = cell_que.top();
+        cell_que.pop();
+        cell_counter++;
+        cell_order->SetTuple1( current.id, cell_counter);
+        if(!cell_decided[current.id]){
+          if (current.confidence < 0) flip_scheme[current.id]=1;
+          alligned_patch->SetTuple1(current.id, patch_count);
+          cell_decided[current.id]=true;
+          //Look for neighbors
+          std::vector<int> ngbs = ngb_triangles(current.id , surface);
+          for( int cell_ngb : ngbs ){
 
             double current_field[3];
             euc_field->GetTuple( current.id, current_field);
@@ -293,24 +317,68 @@ vtkSmartPointer<vtkPolyData> compute_flip_scheme(vtkSmartPointer<vtkPolyData> su
             euc_field->GetTuple( cell_ngb, ngb_field_euc);
             vtkVector3d ngb_v(ngb_field_euc);
 
+            //Prioritize based on the angle ~= alignment
+            //and difference cuvature magnitudes ~= liklihood direction is correct
+
             double conf = current_v.Dot(ngb_v);
-            cellPrior get_in_line{ cell_ngb, 0};
-            if(current.confidence < 0) get_in_line.confidence = - conf;
-            else get_in_line.confidence = conf;
-            cell_que.push(get_in_line);
+            if( fabs(conf) > INV_ROOT_2 ){
+              double curvas[2];
+              curvatures->GetTuple( cell_ngb, curvas );
+              cellPrior get_in_line{ cell_ngb, 0};
+              conf *= fabs(curvas[0]) - fabs(curvas[1]);
+              if(current.confidence < 0) get_in_line.confidence = - conf;
+              else get_in_line.confidence = conf;
+              cell_que.push(get_in_line);
+            }
           }
         }
       }
     }
   }
+  std::cout<< patch_count <<std::endl;
+  //Flip the cells that were antialigned
+  for(int foo=0; foo< num_surf_cells; foo++){
+    if ( flip_scheme[foo] == 1 ){
+      double vv[3];
+      euc_field->GetTuple( foo, vv);
+      euc_field->SetTuple3( foo, -vv[0], -vv[1], -vv[2]);
 
+      double uu[2];
+      minor_curv_field->GetTuple( foo, uu);
+      minor_curv_field->SetTuple2( foo, -uu[0], -uu[1]);
+    }
+  }
+  //Align the patches starting with the largest patch.
+  // bool patch_decided[patch_count];
+  // for(int foo=0; foo<patch_count; foo++) patch_decided[foo]=false;
+  // auto pt_to_max = std::max_element(patch_size.begin(), patch_size.end());
+  // int big_patch = std::distance( patch_size.begin(), pt_to_max  );
+  // std::queue<int> patch_que;
+  // patch_que.push(big_patch);
+  // while(!patch_que.empty()){
+  //   int patch_adams = patch_que.front();
+  //   patch_que.pop();
+  //   std::cout<<patch_adams<<std::endl;
+  //   if(!patch_decided[patch_adams]){
+  //     patch_decided[patch_adams]=true;
+  //     for(int elem: patch_to_nghbrs[patch_adams]){
+  //       std::cout<<" "<<elem;
+  //       patch_que.push(elem);
+  //     }
+  //     std::cout<<std::endl;
+  //   }
+  // }
   surface->GetCellData()->AddArray( cell_order );
-  surface->GetCellData()->AddArray( suggest_flip );
+  surface->GetCellData()->AddArray( alligned_patch );
+  surface->GetCellData()->AddArray(minor_curv_field);
+  surface->GetCellData()->AddArray(euc_field);
   return surface;
 }
 
-//
-vtkSmartPointer<vtkPolyData> compute_minor_curvature_field(vtkSmartPointer<vtkPolyData> surface){
+
+
+
+vtkSmartPointer<vtkPolyData> compute_curvature_frame(vtkSmartPointer<vtkPolyData> surface){
   vtkDataArray *normals=surface->GetCellData()->GetNormals();
   //Initialize memory for the minor curvautre field.
   //The field is defined per triangle of the surface.
@@ -324,15 +392,15 @@ vtkSmartPointer<vtkPolyData> compute_minor_curvature_field(vtkSmartPointer<vtkPo
   minor_curv_field->SetName(minor_name);
 
   //The minor curvature field here is expressed over the standar basis in RR3
-  auto euc_minor_curv_field = vtkSmartPointer<vtkDoubleArray>::New();
-  euc_minor_curv_field->SetNumberOfComponents(3);
-  euc_minor_curv_field->SetNumberOfTuples(surface->GetNumberOfCells());
-  euc_minor_curv_field->SetName(euc_name);
+  auto euc_field = vtkSmartPointer<vtkDoubleArray>::New();
+  euc_field->SetNumberOfComponents(3);
+  euc_field->SetNumberOfTuples(surface->GetNumberOfCells());
+  euc_field->SetName(euc_minor_name);
   //The major curvature field is orthogonal, completing the curvature frame
-  auto euc_major_curv_field = vtkSmartPointer<vtkDoubleArray>::New();
-  euc_major_curv_field->SetNumberOfComponents(3);
-  euc_major_curv_field->SetNumberOfTuples(surface->GetNumberOfCells());
-  euc_major_curv_field->SetName(euc_major_name);
+  auto curvatures = vtkSmartPointer<vtkDoubleArray>::New();
+  curvatures->SetNumberOfComponents(2);
+  curvatures->SetNumberOfTuples(surface->GetNumberOfCells());
+  curvatures->SetName(curvatures_name);
 
 
   //Loop through the cells to compute the shape operator locally and extract
@@ -407,59 +475,51 @@ vtkSmartPointer<vtkPolyData> compute_minor_curvature_field(vtkSmartPointer<vtkPo
       }
     }
   //Compute the minor eigenvalue and the corresponding eigenvector
-  double shape_trace=shape00+shape11;
-  double shape_discr=shape_trace*shape_trace-4*(shape00*shape11-shape01*shape01);
-  if (shape_discr<0) std::cout<<"Contradiction! Shape operator eigs are complex!" <<foo;
-  double shape_small_eig;
-  if(shape_trace>0){
-    shape_small_eig=(shape_trace + sqrt(shape_discr))/2.0;
-  }
-  else{
-    shape_small_eig=(shape_trace - sqrt(shape_discr))/2.0;
-  }
-  double ortho_curv_vect[2];
-  if (fabs(shape_small_eig-shape00) > fabs(shape_small_eig-shape11)){
-    ortho_curv_vect[0] = shape01;
-    ortho_curv_vect[1] = shape_small_eig-shape00;
-  }
-  else{
-    ortho_curv_vect[0] = shape_small_eig-shape11;
-    ortho_curv_vect[1] = shape01;
-  }
-  //What's the right normalization for the field?
-  if( ortho_curv_vect[0]*ortho_curv_vect[1] != 0){
-    double magni = sqrt(ortho_curv_vect[0]*ortho_curv_vect[0]+ortho_curv_vect[1]*ortho_curv_vect[1]);
-    //magni *= .001*( edges[0].Cross(edges[1]) ).Norm();
-    ortho_curv_vect[0]*=shape_small_eig/magni;
-    ortho_curv_vect[1]*=shape_small_eig/magni;
-  }
-  //Store the vector in the standard R3 basis
-  vtkVector3d euc_curv_vect =  ortho_curv_vect[0] * orthobase0 + ortho_curv_vect[1] * orthobase1 ;
-//  vtkVector3d major_vect =  ortho_curv_vect[0] * orthobase1 - ortho_curv_vect[1] * orthobase0 ;
-  //vtkVector3d euc_curv_vect={1.0,4.0,0.0};
+    double shape_trace=shape00+shape11;
+    double shape_discr=shape_trace*shape_trace-4*(shape00*shape11-shape01*shape01);
+    if (shape_discr<0) std::cout<<"Contradiction! Shape operator eigs are complex!" <<foo;
+    double major_curvature, minor_curvature;
+    if(shape_trace>0){
+      major_curvature=(shape_trace + sqrt(shape_discr))/2.0;
+      minor_curvature=(shape_trace - sqrt(shape_discr))/2.0;
+    }
+    else{
+      major_curvature=(shape_trace - sqrt(shape_discr))/2.0;
+      minor_curvature=(shape_trace + sqrt(shape_discr))/2.0;
+    }
+    curvatures->SetTuple2(foo, major_curvature, minor_curvature);
+    double ortho_curv_vect[2];
+    if (fabs(major_curvature-shape00) > fabs(major_curvature-shape11)){
+      ortho_curv_vect[0] = shape01;
+      ortho_curv_vect[1] = major_curvature-shape00;
+    }
+    else{
+      ortho_curv_vect[0] = major_curvature-shape11;
+      ortho_curv_vect[1] = shape01;
+    }
+    vtkVector3d euc_curv_vect =  ortho_curv_vect[0] * orthobase0 + ortho_curv_vect[1] * orthobase1 ;
+    double magni = euc_curv_vect.Norm();
+    if (magni>0) euc_curv_vect =  1/magni * euc_curv_vect ;
     //Hacky attempt at semi continuity by choosing rando hemisphere to rep RealProjective2Space
-  if(euc_curv_vect[2] < 0){
-    euc_curv_vect = -1 * euc_curv_vect;
+    if(euc_curv_vect[2] < 0){
+      euc_curv_vect = -1 * euc_curv_vect;
+    }
+    euc_field->SetTuple3( foo , euc_curv_vect[0], euc_curv_vect[1], euc_curv_vect[2]);
+    //Also store the vector in the local edge basis e0=p2-p1 and p1=p0-p2
+    double e00 = edges[0].Dot(edges[0]), e01 = edges[0].Dot(edges[1]), e11 = edges[1].Dot(edges[1]);
+    double edet = e00*e11-e01*e01;
+    double e0dw = edges[0].Dot(euc_curv_vect)  , e1dw = edges[1].Dot(euc_curv_vect) ;
+    double minor_curv_vect[2] ={
+      (e11*e0dw - e01 * e1dw) /edet,
+      (e00*e1dw - e01 * e0dw) /edet,
+    };
+    minor_curv_field->SetTuple( foo , minor_curv_vect);
   }
-  euc_minor_curv_field->SetTuple3( foo , euc_curv_vect[0], euc_curv_vect[1], euc_curv_vect[2]);
-  //Also store the vector in the local edge basis e0=p2-p1 and p1=p0-p2
-  double e00 = edges[0].Dot(edges[0]), e01 = edges[0].Dot(edges[1]), e11 = edges[1].Dot(edges[1]);
-  double edet = e00*e11-e01*e01;
-  double e0dw = edges[0].Dot(euc_curv_vect)  , e1dw = edges[1].Dot(euc_curv_vect) ;
-  double minor_curv_vect[2] ={
-    (e11*e0dw - e01 * e1dw) /edet,
-    (e00*e1dw - e01 * e0dw) /edet,
-  };
-  minor_curv_field->SetTuple( foo , minor_curv_vect);
-  //std::cout<<"cell "<< foo <<std::endl;
-  //std::cout<<"std base "<<" "<<euc_curv_vect[0]<<" "<<euc_curv_vect[1]<<std::endl;
-  //std::cout<<"edgebase "<<" "<<minor_curv_vect[0]<<" "<<minor_curv_vect[1]<<std::endl;
-  }
-  //Can we get the directions consistent?
+
   vtkVector3d dominant_dir={0,0,0};
   for(int foo=0; foo<surface->GetNumberOfCells(); foo++){
     double tempf[3];
-    euc_minor_curv_field->GetTuple( foo , tempf);
+    euc_field->GetTuple( foo , tempf);
     if ( (isnan(tempf[0])) || (isnan(tempf[0])) || (isnan(tempf[0]))){
       std::cout<< "NaN in " << foo << " " <<tempf[0] <<" "<<tempf[1] << " " << tempf[2];
     }
@@ -469,14 +529,16 @@ vtkSmartPointer<vtkPolyData> compute_minor_curvature_field(vtkSmartPointer<vtkPo
   std::cout << "Dominant direction " << dominant_dir[0] <<" " << dominant_dir[1] <<" " << dominant_dir[2] << std::endl;
   for(int foo=0; foo<surface->GetNumberOfCells(); foo++){
     double tempf[3];
-    euc_minor_curv_field->GetTuple( foo , tempf);
+    euc_field->GetTuple( foo , tempf);
     vtkVector3d tempv(tempf);
     if( dominant_dir.Dot(tempv) < 0){
-      euc_minor_curv_field->SetTuple3( foo , -tempv[0], -tempv[1], -tempv[2]);
+      tempv= -1 * tempv;
+      euc_field->SetTuple3( foo , tempv[0], tempv[1], tempv[2]);
       double templ[2];
       minor_curv_field->GetTuple(foo, templ);
       minor_curv_field->SetTuple2(foo, -templ[0], -templ[1]);
     }
+
   }
   //Looks noisey. Try a uniform window blur on cell neighbors.
   //There should be a fast way to do this with a convolution filter....
@@ -489,7 +551,7 @@ vtkSmartPointer<vtkPolyData> compute_minor_curvature_field(vtkSmartPointer<vtkPo
   //   blurred_field->SetName(blur_name);
   //   for(int foo = 0; foo<surface->GetNumberOfCells(); foo++){
   //     double tempf[3];
-  //     euc_minor_curv_field->GetTuple( foo , tempf);
+  //     euc_field->GetTuple( foo , tempf);
   //     vtkVector3d field_here(tempf);
   //     int edge_ends[3][3] = {{2,1},{0,2},{1,0}};
   //     auto cell_pts = vtkSmartPointer<vtkIdList>::New();
@@ -501,7 +563,7 @@ vtkSmartPointer<vtkPolyData> compute_minor_curvature_field(vtkSmartPointer<vtkPo
   //       cell_pts->GetId(edge_ends[bar][0]),
   //       cell_ngb);
   //       if(cell_ngb->GetNumberOfIds()>0){
-  //         euc_minor_curv_field->GetTuple(cell_ngb->GetId(0), tempf);
+  //         euc_field->GetTuple(cell_ngb->GetId(0), tempf);
   //         vtkVector3d field_there(tempf);
   //         field_here=field_here+field_there;
   //       }
@@ -516,50 +578,20 @@ vtkSmartPointer<vtkPolyData> compute_minor_curvature_field(vtkSmartPointer<vtkPo
   // }
 
   // If an old curvature array already exists we remove it
-  if (surface->GetCellData()->HasArray(minor_name))
-    surface->GetCellData()->RemoveArray(minor_name);
 
-  if (surface->GetCellData()->HasArray(euc_name))
-    surface->GetCellData()->RemoveArray(euc_name);
-
-  surface->GetCellData()->AddArray(minor_curv_field);
-  surface->GetCellData()->AddArray(euc_minor_curv_field);
-
-  surface = compute_flip_scheme(surface);
-
-  for(int foo=0; foo<surface->GetNumberOfCells(); foo++){
-    int to_flip_or_not_to_flip;
-    auto flip_scheme = surface->GetCellData()->GetArray("Flip These");
-    to_flip_or_not_to_flip = flip_scheme->GetTuple1(foo);
-    double vv[3];
-    euc_minor_curv_field->GetTuple( foo, vv);
-    if ( to_flip_or_not_to_flip == 1 ){
-      euc_minor_curv_field->SetTuple3( foo, -vv[0], -vv[1], -vv[2]);
-
-      double uu[2];
-      minor_curv_field->GetTuple( foo, uu);
-      minor_curv_field->SetTuple2( foo, -uu[0], -uu[1]);
-    }
-    double temp_n[3];
-    normals->GetTuple(foo, temp_n);
-    vtkVector3d normal(temp_n);
-    vtkVector3d minor_vect(vv);
-    vtkVector3d major_vect = normal.Cross(minor_vect);
-    euc_major_curv_field->SetTuple3(foo, major_vect[0], major_vect[1], major_vect[2]);
-  }
 
   if (surface->GetCellData()->HasArray(minor_name))
     surface->GetCellData()->RemoveArray(minor_name);
-  if (surface->GetCellData()->HasArray(euc_major_name))
-    surface->GetCellData()->RemoveArray(euc_major_name);
-
-  if (surface->GetCellData()->HasArray(euc_name))
-    surface->GetCellData()->RemoveArray(euc_name);
-
+  if (surface->GetCellData()->HasArray(euc_minor_name))
+    surface->GetCellData()->RemoveArray(euc_minor_name);
+  if (surface->GetCellData()->HasArray(curvatures_name))
+    surface->GetCellData()->RemoveArray(curvatures_name);
 
   surface->GetCellData()->AddArray(minor_curv_field);
-  surface->GetCellData()->AddArray(euc_minor_curv_field);
-  surface->GetCellData()->AddArray(euc_major_curv_field);
+  surface->GetCellData()->AddArray(euc_field);
+  surface->GetCellData()->AddArray(curvatures);
+
+  surface = allign_field(surface);
 
   return surface;
 }
@@ -640,11 +672,10 @@ vtkSmartPointer<vtkPolyData> compute_tubular_parametrization(vtkSmartPointer<vtk
   return surface;
 }
 
-int main(int argc, const char* argv[])
-{
+int main(int argc, const char* argv[]){
   const char* output_name;
   auto surface= vtkSmartPointer<vtkPolyData>::New();
-  bool is_input = true;
+  bool is_input = false;
   if (is_input) {
     if (argc < 3) {
       fprintf(stderr,"Usage: %s <input> [<output.vtp>] \n",argv[0]);
@@ -718,7 +749,7 @@ int main(int argc, const char* argv[])
   surface->BuildLinks();
   std::cout<<"Computing minor principle curvature field. "<<std::endl;
 
-  surface = compute_minor_curvature_field(surface);
+  surface = compute_curvature_frame(surface);
 
 
   surface = compute_tubular_parametrization(surface);
