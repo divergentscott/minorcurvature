@@ -121,7 +121,7 @@ set<int> adjacent_vertices(int seed, vtkSmartPointer<vtkPolyData> surface ){
   return adj_verts;
 }
 
-vector<int> cell_pair_to_vert_pair( int cell1, int cell2, vtkSmartPointer<vtkPolyData> surface){
+vector<int> cell_pair_verts_shared( int cell1, int cell2, vtkSmartPointer<vtkPolyData> surface){
   //Takes a pair of cells and returns the ptsIds of points they have in common
   set<int> pts1;
   vector<int> common_pts;
@@ -133,12 +133,12 @@ vector<int> cell_pair_to_vert_pair( int cell1, int cell2, vtkSmartPointer<vtkPol
     int a_pt = cellIdList->GetId(i);
     if( pts1.count(a_pt) ) common_pts.push_back(a_pt);
   }
-  if( common_pts.size() != 2 ) cout<< "cell_pair_to_vert_pair did not find a pair";
+  if( common_pts.size() != 2 ) cout<< "cell_pair_verts_shared did not find a pair";
   sort(common_pts.begin(), common_pts.end());
   return common_pts;
 }
 
-vector<int> vert_pair_to_cell_pair( int pt1, int pt2, vtkSmartPointer<vtkPolyData> surface){
+vector<int> vert_pair_cells_shared( int pt1, int pt2, vtkSmartPointer<vtkPolyData> surface){
   //Takes a pair of adjacent vertices and returns the dual pair of cells
   set<int> cells1;
   vector<int> common_cells;
@@ -150,7 +150,6 @@ vector<int> vert_pair_to_cell_pair( int pt1, int pt2, vtkSmartPointer<vtkPolyDat
     int a_cell = cellIdList->GetId(i);
     if( cells1.count(a_cell) ) common_cells.push_back(a_cell);
   }
-  // if( common_cells.size() != 2 ) cout<< "vert_pair_to_cell_pair did not find a pair";
   sort(common_cells.begin(), common_cells.end());
   return common_cells;
 }
@@ -185,8 +184,8 @@ double dot_ngbs(int tri1, int tri2, vtkSmartPointer<vtkPolyData> surface, int ro
 int perpin_weights(int vert1, int vert2, vtkSmartPointer<vtkPolyData> surface){
   //Computes the weights for a maxcut of parllel vs perpindicular vectors
   //Option
-  int bins = 100000;
-  vector<int> common_cells =  vert_pair_to_cell_pair(vert1, vert2, surface);
+  int bins = 10000000;
+  vector<int> common_cells =  vert_pair_cells_shared(vert1, vert2, surface);
   if( common_cells.size() == 2){
     double w0 = dot_ngbs( common_cells[0], common_cells[1], surface, 0);
     double w1 = dot_ngbs( common_cells[0], common_cells[1], surface, 1);
@@ -201,13 +200,38 @@ int parallel_weights(int vert1, int vert2, vtkSmartPointer<vtkPolyData> surface)
   //Computes the weights for a maxcut of forward vs backward
   //Option
   int bins = 10000000;
-  vector<int> common_cells =  vert_pair_to_cell_pair(vert1, vert2, surface);
+  vector<int> common_cells =  vert_pair_cells_shared(vert1, vert2, surface);
   if( common_cells.size() == 2){
     double wght = dot_ngbs( common_cells[0], common_cells[1], surface, 0);
     return round( wght * bins);
   }
   else return 0;
 }
+
+int perpin_weight_by_curv(int vert1, int vert2, vtkSmartPointer<vtkPolyData> surface){
+  //What if we weight proportionally with the difference in curvatures
+  //If two cells seem flat, we shouldn't care if they are aligned or not
+  int bins = 1000000000;
+  vector<int> common_cells =  vert_pair_cells_shared(vert1, vert2, surface);
+  if( common_cells.size() == 2){
+    auto curvels = surface->GetCellData()->GetArray(curvatures_name);
+    double curvs0[2];
+    curvels->GetTuple( common_cells[0], curvs0);
+    double sure0 = curvs0[0]-curvs0[1];
+    double curvs1[2];
+    curvels->GetTuple( common_cells[1], curvs1);
+    double sure1 = curvs1[0]-curvs1[1];
+    double w0 = dot_ngbs( common_cells[0], common_cells[1], surface, 0);
+    double w1 = dot_ngbs( common_cells[0], common_cells[1], surface, 1);
+    double w3 = dot_ngbs( common_cells[1], common_cells[0], surface, 1);
+    double wght = w0*w0 - 0.5*(w1*w1 + w3*w3);
+    if (sure0>sure1) wght *= sure0;
+    else wght *= sure1;
+    return round( wght * bins);
+  }
+  else return 0;
+}
+
 
 
 vector<bool> maxcut_surface_cells(vtkSmartPointer<vtkPolyData> surface, int (*weight_func)(int, int, vtkSmartPointer<vtkPolyData>) ){
@@ -218,7 +242,6 @@ vector<bool> maxcut_surface_cells(vtkSmartPointer<vtkPolyData> surface, int (*we
   // e1 % num_edges == e2 % num_edges
   int num_surf_cells = surface->GetNumberOfCells();
   int num_surf_verts = surface->GetNumberOfPoints();
-  int blwp_edge=0;
   vector< array<int,2> > orig_edge_list;
   orig_edge_list.reserve( 2*num_surf_cells );
   map< array<int,2> , int > orig_edge_lookup;
@@ -238,7 +261,7 @@ vector<bool> maxcut_surface_cells(vtkSmartPointer<vtkPolyData> surface, int (*we
   auto find_edge_id = [&orig_edge_lookup, &num_surf_edges]( int v1, int v2){
     int x;
     if (v1 < v2) x = orig_edge_lookup[ {v1, v2} ];
-    if (v1 > v2) x = orig_edge_lookup[ {v2, v1} ] +num_surf_edges;
+    else x = orig_edge_lookup[ {v2, v1} ] +num_surf_edges;
     return x;
   };
 
@@ -283,7 +306,7 @@ vector<bool> maxcut_surface_cells(vtkSmartPointer<vtkPolyData> surface, int (*we
     vector<int> adj_tris = adjacent_triangles(foo, surface);
     for(int bar : adj_tris){
       if( foo < bar ) {
-        vector<int> ptpair = cell_pair_to_vert_pair( foo, bar, surface);
+        vector<int> ptpair = cell_pair_verts_shared( foo, bar, surface);
         int ed_id = find_edge_id( ptpair[0], ptpair[1]);
         int match_id = blossom_matching.GetMatch(ed_id);
         //the graph shouldn't have any of the edges chosen by the matching
@@ -302,7 +325,7 @@ vector<bool> maxcut_surface_cells(vtkSmartPointer<vtkPolyData> surface, int (*we
   vtkGraph* outputGraph = connectedComponents->GetOutput();
   vtkIntArray* components = vtkIntArray::SafeDownCast(outputGraph->GetVertexData()->GetArray("component"));
   surface->GetCellData()->AddArray(components);
-  //Collect num_cells per component. The most common decides the flip scheme.
+  //Collect num_surf_cells per component. The most common decides the flip scheme.
   double comprange[2];
   components->GetRange( comprange );
   const int num_components = round(comprange[1])+1;
@@ -311,12 +334,11 @@ vector<bool> maxcut_surface_cells(vtkSmartPointer<vtkPolyData> surface, int (*we
   component_graph->SetNumberOfVertices(num_components);
   for (int an_edge : cut_set){
     array<int,2> vin_an_edge = orig_edge_list[an_edge];
-    vector<int> cin_an_edge = vert_pair_to_cell_pair( vin_an_edge[0], vin_an_edge[1], surface);
+    vector<int> cin_an_edge = vert_pair_cells_shared( vin_an_edge[0], vin_an_edge[1], surface);
     int comp0 = components->GetValue(cin_an_edge[0]);
     int comp1 = components->GetValue(cin_an_edge[1]);
     if( component_graph->GetEdgeId(comp0,comp1) == -1 ) component_graph->AddEdge(comp0,comp1);
   }
-  cout<< component_graph->GetNumberOfEdges() << " " << cut_set.size() <<endl;
   //We two color by taking distance mod 2 in the graph of components from any vertex
   //Compute distance by breadth first search
   auto BFS = vtkSmartPointer<vtkBoostBreadthFirstSearch>::New();
@@ -394,32 +416,32 @@ vtkSmartPointer<vtkPolyData> reorient_frame (vtkSmartPointer<vtkPolyData> surfac
   surface->GetCellData()->AddArray( euc_field );
 
   //Compute a maxcut to decide what to flip parallel
-  vector<bool> good_forward2 = maxcut_surface_cells(surface, parallel_weights);
+  vector<bool> good_forward2 = maxcut_surface_cells(surface, perpin_weight_by_curv );
   auto flip1802 = vtkSmartPointer<vtkIntArray>::New();
   flip1802->SetNumberOfTuples(num_surf_cells);
-  flip1802->SetName("Flip Parallel2");
+  flip1802->SetName("perp origy maybe");
   for(int foo=0; foo<num_surf_cells; foo++){
     if( good_forward2[foo] ) flip1802->SetValue(foo,0);
     else flip1802->SetValue(foo,1);
   }
   surface->GetCellData()->AddArray(flip1802);
 
-  for(int foo=0; foo<num_surf_cells; foo++){
-    if( !good_forward2[foo] ){
-      double tri[3];
-      euc_field->GetTuple( foo, tri);
-      euc_field->SetTuple3( foo, -tri[0], -tri[1], -tri[2]);
-    }
-  }
-  surface->GetCellData()->AddArray( euc_field );
+  // for(int foo=0; foo<num_surf_cells; foo++){
+  //   if( !good_forward2[foo] ){
+  //     double tri[3];
+  //     euc_field->GetTuple( foo, tri);
+  //     euc_field->SetTuple3( foo, -tri[0], -tri[1], -tri[2]);
+  //   }
+  // }
+  // surface->GetCellData()->AddArray( euc_field );
 
 
   return surface;
 }
 
 //Function to align the vector field consistently
-vtkSmartPointer<vtkPolyData> allign_field(vtkSmartPointer<vtkPolyData> surface ){
-  //Remembers the order cells were decided in the allignment
+vtkSmartPointer<vtkPolyData> align_field(vtkSmartPointer<vtkPolyData> surface ){
+  //Remembers the order cells were decided in the alignment
   int const num_surf_cells = surface->GetNumberOfCells();
   auto cell_order = vtkSmartPointer<vtkIntArray>::New();
   cell_order->SetNumberOfComponents(1);
@@ -427,17 +449,16 @@ vtkSmartPointer<vtkPolyData> allign_field(vtkSmartPointer<vtkPolyData> surface )
   cell_order->SetName("Cell Order");
 
   //Remembers the patch cells belonged to
-  auto alligned_patch = vtkSmartPointer<vtkIntArray>::New();
-  alligned_patch->SetNumberOfComponents(1);
-  alligned_patch->SetNumberOfTuples( num_surf_cells );
-  alligned_patch->SetName("Concurrence Patch");
+  auto aligned_patch = vtkSmartPointer<vtkIntArray>::New();
+  aligned_patch->SetNumberOfComponents(1);
+  aligned_patch->SetNumberOfTuples( num_surf_cells );
+  aligned_patch->SetName("Concurrence Patch");
   vector<double> cell_to_patch;
   cell_to_patch.resize(num_surf_cells);
 
   vtkSmartPointer<vtkDataArray> euc_field = surface->GetCellData()->GetArray(euc_minor_name);
   vtkSmartPointer<vtkDataArray> curvatures = surface->GetCellData()->GetArray(curvatures_name);
   vtkSmartPointer<vtkDataArray> normals=surface->GetCellData()->GetNormals();
-
 
   //Partition the surface into patches where the field aligns locally within 45 degrees
   vector<int> flip_scheme;
@@ -466,7 +487,7 @@ vtkSmartPointer<vtkPolyData> allign_field(vtkSmartPointer<vtkPolyData> surface )
         cell_order->SetTuple1( current.id, cell_counter);
         if(!cell_decided[current.id]){
           if (current.confidence < 0) flip_scheme[current.id] = 1;
-          alligned_patch->SetTuple1( current.id, patch_count);
+          aligned_patch->SetTuple1( current.id, patch_count);
           cell_to_patch[current.id] = patch_count;
           cell_decided[current.id] = true;
           num_cells_in_patch++;
@@ -501,7 +522,7 @@ vtkSmartPointer<vtkPolyData> allign_field(vtkSmartPointer<vtkPolyData> surface )
       }
       if( num_cells_in_patch ==1 ){
         patch_count--;
-        alligned_patch->SetTuple1(last_cell_seen, 0);
+        aligned_patch->SetTuple1(last_cell_seen, 0);
         cell_to_patch[last_cell_seen]=0;
       }
     }
@@ -565,7 +586,7 @@ vtkSmartPointer<vtkPolyData> allign_field(vtkSmartPointer<vtkPolyData> surface )
     }
   }
 
-  //Decide how to rotate patches to allign moving out from the biggest patch.
+  //Decide how to rotate patches to align moving out from the biggest patch.
   vector<int> rot_scheme;
   rot_scheme.resize(patch_count);
   rot_scheme[big_patch] = 0;
@@ -621,10 +642,11 @@ vtkSmartPointer<vtkPolyData> allign_field(vtkSmartPointer<vtkPolyData> surface )
   }
   surface->GetCellData()->AddArray( rotation_scheme );
   surface->GetCellData()->AddArray( cell_order );
-  surface->GetCellData()->AddArray( alligned_patch );
+  surface->GetCellData()->AddArray( aligned_patch );
   surface->GetCellData()->AddArray( euc_field );
   return surface;
 }
+
 
 
 vtkSmartPointer<vtkPolyData> compute_curvature_frame(vtkSmartPointer<vtkPolyData> surface){
@@ -744,27 +766,6 @@ vtkSmartPointer<vtkPolyData> compute_curvature_frame(vtkSmartPointer<vtkPolyData
     euc_field->SetTuple3( foo , euc_curv_vect[0], euc_curv_vect[1], euc_curv_vect[2]);
   }
 
-  //Pre-alignment
-  //Decide a dominant direction to roughly align the field with.
-  //
-  vtkVector3d dominant_dir={0,0,0};
-  for(int foo=0; foo<num_surf_cells; foo++){
-    double tempf[3];
-    euc_field->GetTuple( foo , tempf);
-    vtkVector3d tempv(tempf);
-    dominant_dir = dominant_dir + tempv;
-  }
-  cout << "Dominant direction " << dominant_dir[0] <<" " << dominant_dir[1] <<" " << dominant_dir[2] << endl;
-  for(int foo=0; foo<num_surf_cells; foo++){
-    double tempf[3];
-    euc_field->GetTuple( foo , tempf);
-    vtkVector3d tempv(tempf);
-    if( dominant_dir.Dot(tempv) < 0){
-      tempv= -1 * tempv;
-      euc_field->SetTuple3( foo , tempv[0], tempv[1], tempv[2]);
-    }
-  }
-
   //Looks noisey. Try a uniform window blur on cell neighbors.
   //There should be a fast way to do this with a convolution filter....
   // bool apply_blur = false;
@@ -811,9 +812,28 @@ vtkSmartPointer<vtkPolyData> compute_curvature_frame(vtkSmartPointer<vtkPolyData
   surface->GetCellData()->AddArray(euc_field);
   surface->GetCellData()->AddArray(curvatures);
 
-  //surface = allign_field(surface);
+  surface = align_field(surface);
   surface = reorient_frame(surface);
 
+  return surface;
+}
+
+
+
+vtkSmartPointer<vtkPolyData> compute_tubular_parametrization(vtkSmartPointer<vtkPolyData> surface){
+  //Contstruct a function u: {mesh points}->RR with gradient ~= minor curvature field
+  int num_pts = surface->GetNumberOfPoints();
+  auto cell_pts = vtkSmartPointer<vtkIdList>::New();
+  int num_surf_cells = surface->GetNumberOfCells();
+  //Construct the discrete gradient matrix for the surface
+  //The size is slightly larger to get constraint u(0)=0
+  vector< Eigen::Triplet<double> > grad_entrylist;
+  grad_entrylist.reserve(4 * num_surf_cells+1);
+  vector< Eigen::Triplet<double> > curv_entrylist;
+  curv_entrylist.reserve(2 * num_surf_cells+1);
+  double curv_entry[2];
+
+  vtkSmartPointer<vtkDataArray> euc_field = surface->GetCellData()->GetArray(euc_minor_name);
   //Initialize memory for the minor curvautre field.
   //The field is defined per triangle of the surface.
   //The field is the direction of the shaper operator eignevalue with the lower
@@ -857,37 +877,19 @@ vtkSmartPointer<vtkPolyData> compute_curvature_frame(vtkSmartPointer<vtkPolyData
     surface->GetCellData()->RemoveArray(minor_name);
   }
   surface->GetCellData()->AddArray(minor_curv_field);
-
-  return surface;
-}
-
-
-vtkSmartPointer<vtkPolyData> compute_tubular_parametrization(vtkSmartPointer<vtkPolyData> surface){
-  //Contstruct a function u: {mesh points}->RR with gradient ~= minor curvature field
-  int num_pts = surface->GetNumberOfPoints();
-  auto cell_pts = vtkSmartPointer<vtkIdList>::New();
-  int num_cells = surface->GetNumberOfCells();
-  //Construct the discrete gradient matrix for the surface
-  //The size is slightly larger to get constraint u(0)=0
-  vector< Eigen::Triplet<double> > grad_entrylist;
-  grad_entrylist.reserve(4 * num_cells+1);
-  vector< Eigen::Triplet<double> > curv_entrylist;
-  curv_entrylist.reserve(2 * num_cells+1);
-  double curv_entry[2];
-  vtkSmartPointer<vtkDataArray> curv_data = surface->GetCellData()->GetArray(minor_name);
   //Porting data from vtkArray to a Eigen::Matrix
   //This should probably be done when you compute it in the first place
-  for(int foo=0; foo< num_cells; foo++){
+  for(int foo=0; foo< num_surf_cells; foo++){
     surface->GetCellPoints(foo,cell_pts);
     int pt0=cell_pts->GetId(0), pt1=cell_pts->GetId(1), pt2=cell_pts->GetId(2);
     //cout<<foo<<"cell's pts"<<pt0<<pt1<<pt2<<endl;
-    curv_data->GetTuple(foo,curv_entry);
+    minor_curv_field->GetTuple(foo,curv_entry);
     double veccomp0 = curv_entry[0];
     double veccomp1 = curv_entry[1];
     double vec_norm = sqrt(veccomp0 * veccomp0 + veccomp1 * veccomp1);
     //This threshold for normalization is totally arbitrary
     //and should be informed by stats on the curvature.
-    double normalizing_thresh = 1e-5;
+    double normalizing_thresh = 1e-10;
     if (vec_norm > normalizing_thresh){
       veccomp0 *= 1/vec_norm;
       veccomp1 *= 1/vec_norm;
@@ -902,14 +904,14 @@ vtkSmartPointer<vtkPolyData> compute_tubular_parametrization(vtkSmartPointer<vtk
     grad_entrylist.push_back( Eigen::Triplet<double> (2*foo+1, pt2, -1) );
   }
   //Add constraint u(0)=0
-  grad_entrylist.push_back( Eigen::Triplet<double> (2*num_cells, 0, 1) );
-  curv_entrylist.push_back( Eigen::Triplet<double> (2*num_cells, 0, 0) );
+  grad_entrylist.push_back( Eigen::Triplet<double> (2*num_surf_cells, 0, 1) );
+  curv_entrylist.push_back( Eigen::Triplet<double> (2*num_surf_cells, 0, 0) );
 
   //Build Matrix
-  Eigen::SparseMatrix<double> surf_gradient( 2*num_cells + 1, num_pts);
+  Eigen::SparseMatrix<double> surf_gradient( 2*num_surf_cells + 1, num_pts);
   surf_gradient.setFromTriplets(grad_entrylist.begin(), grad_entrylist.end());
   //Build target vector i.e. the curvature field
-  Eigen::SparseMatrix<double> curv_field( 2*num_cells + 1, 1);
+  Eigen::SparseMatrix<double> curv_field( 2*num_surf_cells + 1, 1);
   curv_field.setFromTriplets(curv_entrylist.begin(), curv_entrylist.end());
 
   Eigen::LeastSquaresConjugateGradient< Eigen::SparseMatrix<double> > solver;
@@ -935,6 +937,115 @@ vtkSmartPointer<vtkPolyData> compute_tubular_parametrization(vtkSmartPointer<vtk
   surface->GetPointData()->AddArray(tube_param);
   return surface;
 }
+
+
+
+array<double,4> local_coordinate_vec(int at_cell,  vtkSmartPointer<vtkPolyData> surface){
+  vtkSmartPointer<vtkDataArray> vec_field = surface->GetCellData()->GetArray(euc_minor_name);
+  //Compute the vector field in local coordinates.
+  //Compute the local coordinate representation over
+  // local edge basis e0=p2-p1 and e1=p0-p2
+  //Get the points as vectors
+  double temp_pts[3][3];
+  vtkVector3d pts[3];
+  auto cell_pts = vtkSmartPointer<vtkIdList>::New();
+  surface->GetCellPoints( at_cell, cell_pts);
+  for(int bar=0; bar<3; bar++){
+    surface->GetPoint( cell_pts->GetId(bar), temp_pts[bar] );
+    pts[bar] = vtkVector3d(temp_pts[bar]);
+  }
+  //points are got.
+  //Compute the triangle edges
+  vtkVector3d edges[3];
+  for(int bar=0; bar<3; bar ++){
+    //Edge vectors for orientation 012
+    edges[bar] = pts [ (2+bar)%3 ] - pts [ (1+bar)%3 ];
+  }
+  //edges are computed.
+  //
+  double e00 = edges[0].Dot(edges[0]), e01 = edges[0].Dot(edges[1]), e11 = edges[1].Dot(edges[1]);
+  double edet = e00*e11-e01*e01;
+  double temp[3];
+  vec_field->GetTuple(at_cell,temp);
+  vtkVector3d vecvect(temp);
+  double e0dw = edges[0].Dot(vecvect)  , e1dw = edges[1].Dot(vecvect) ;
+  double len0=edges[0].Norm();
+  double len1=edges[1].Norm();
+  vtkVector3d area = edges[0].Cross(edges[1]);
+  double lenscale = sqrt( area.Norm());
+  array<double,4> local_vec={
+    (e11*e0dw - e01 * e1dw) / edet * lenscale,
+    (e00*e1dw - e01 * e0dw) / edet * lenscale,
+    len0,
+    len1 // * lenscale
+  };
+  return local_vec;
+}
+
+
+
+vtkSmartPointer<vtkPolyData> potential_from_vec_field(vtkSmartPointer<vtkPolyData> surface){
+  //Contstruct a function u: {mesh points}->RR with gradient ~= vec_field
+  int num_pts = surface->GetNumberOfPoints();
+  int num_surf_cells = surface->GetNumberOfCells();
+  //Construct the discrete gradient matrix for the surface
+  //The size is slightly larger to get constraint u(0)=0
+  vector< Eigen::Triplet<double> > grad_entrylist;
+  grad_entrylist.reserve(4 * num_surf_cells+1);
+  vector< Eigen::Triplet<double> > vec_field_entrylist;
+  vec_field_entrylist.reserve(2 * num_surf_cells+1);
+
+  //Porting data from vtkArray to a Eigen::Matrix
+  //This should probably be done when you compute it in the first place
+  for(int foo=0; foo< num_surf_cells; foo++){
+    auto cell_pts = vtkSmartPointer<vtkIdList>::New();
+    surface->GetCellPoints(foo,cell_pts);
+    int pt0=cell_pts->GetId(0), pt1=cell_pts->GetId(1), pt2=cell_pts->GetId(2);
+    array<double,4> local_vec = local_coordinate_vec(foo, surface);
+    vec_field_entrylist.push_back( Eigen::Triplet<double> ( foo, 0, local_vec[0] ) );
+    vec_field_entrylist.push_back( Eigen::Triplet<double> ( foo + num_surf_cells, 0, local_vec[1] ) );
+    //The graditent per cell has component0 = u(p2)-u(p1)
+    //and component1 = u(p0)-u(p2)
+    grad_entrylist.push_back( Eigen::Triplet<double> (foo, pt2, 1/local_vec[2]) );
+    grad_entrylist.push_back( Eigen::Triplet<double> (foo, pt1, -1/local_vec[2]) );
+    grad_entrylist.push_back( Eigen::Triplet<double> (foo+ num_surf_cells, pt0, 1/local_vec[3]) );
+    grad_entrylist.push_back( Eigen::Triplet<double> (foo+ num_surf_cells, pt2, -1/local_vec[3]) );
+  }
+  //Add constraint u(0)=0
+  grad_entrylist.push_back( Eigen::Triplet<double> (2*num_surf_cells, 0, 1) );
+  vec_field_entrylist.push_back( Eigen::Triplet<double> (2*num_surf_cells, 0, 0) );
+
+  //Build Matrix
+  Eigen::SparseMatrix<double> surf_gradient( 2*num_surf_cells + 1, num_pts);
+  surf_gradient.setFromTriplets(grad_entrylist.begin(), grad_entrylist.end());
+  //Build target vector i.e. the curvature field
+  Eigen::SparseMatrix<double> vec_field_mat( 2*num_surf_cells + 1, 1);
+  vec_field_mat.setFromTriplets(vec_field_entrylist.begin(), vec_field_entrylist.end());
+
+  Eigen::LeastSquaresConjugateGradient< Eigen::SparseMatrix<double> > solver;
+  cout<<"Factoring surface gradient."<<endl;
+  solver.compute(surf_gradient);
+  Eigen::SparseMatrix<double> u_param(num_pts,1);
+  cout<<"Constructing potential for vector field."<<endl;
+  time_t time1,time2;
+  time1 = time(0);
+  u_param = solver.solve(vec_field_mat);
+  time2 = time(0);
+  int it_took = difftime(time2,time1);
+  cout<<"Integration finished in " << it_took/60 << " min and " << it_took%60 << " sec." <<endl;
+  cout<<"Required " << solver.iterations() << " iterations obtaining error " << solver.error() <<endl;
+  const char* potential_name="Potential";
+  auto potential_field = vtkSmartPointer<vtkDoubleArray>::New();
+  potential_field->SetNumberOfComponents(1);
+  potential_field->SetNumberOfTuples(num_pts);
+  potential_field->SetName(potential_name);
+  for(int foo=0; foo<num_pts; foo++){
+    potential_field->SetTuple1(foo, u_param.coeffRef(foo,0));
+  }
+  surface->GetPointData()->AddArray(potential_field);
+  return surface;
+}
+
 
 
 vtkSmartPointer<vtkPolyData> build_small_simplicial_example()
@@ -1198,8 +1309,10 @@ int main(int argc, const char* argv[]){
   cout<<"Computing minor principle curvature field. "<<endl;
 
   surface = compute_curvature_frame( surface );
-  
-  surface = compute_tubular_parametrization( surface );
+
+  // surface = compute_tubular_parametrization( surface );
+
+  surface = potential_from_vec_field( surface );
 
   cout<<"Writing file "<<output_name<<endl;
   vtkSmartPointer<vtkXMLPolyDataWriter> writer = vtkSmartPointer<vtkXMLPolyDataWriter>::New();
