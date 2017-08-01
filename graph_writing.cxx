@@ -747,44 +747,6 @@ vtkSmartPointer<vtkPolyData> compute_curvature_frame(vtkSmartPointer<vtkPolyData
     }
     euc_field->SetTuple3( foo , euc_curv_vect[0], euc_curv_vect[1], euc_curv_vect[2]);
   }
-
-  //Looks noisey. Try a uniform window blur on cell neighbors.
-  //There should be a fast way to do this with a convolution filter....
-  // bool apply_blur = false;
-  // if(apply_blur){
-  //   const char* blur_name="BlurredField";
-  //   auto blurred_field = vtkSmartPointer<vtkDoubleArray>::New();
-  //   blurred_field->SetNumberOfComponents(3);
-  //   blurred_field->SetNumberOfTuples(num_surf_cells);
-  //   blurred_field->SetName(blur_name);
-  //   for(int foo = 0; foo<num_surf_cells; foo++){
-  //     double tempf[3];
-  //     euc_field->GetTuple( foo , tempf);
-  //     vtkVector3d field_here(tempf);
-  //     int edge_ends[3][3] = {{2,1},{0,2},{1,0}};
-  //     auto cell_pts = vtkSmartPointer<vtkIdList>::New();
-  //     surface->GetCellPoints(foo,cell_pts);
-  //     auto cell_ngb = vtkSmartPointer<vtkIdList>::New();
-  //     for(int bar=0;bar<3;bar++){
-  //       surface->GetCellEdgeNeighbors(foo,
-  //       cell_pts->GetId(edge_ends[bar][0]),
-  //       cell_pts->GetId(edge_ends[bar][0]),
-  //       cell_ngb);
-  //       if(cell_ngb->GetNumberOfIds()>0){
-  //         euc_field->GetTuple(cell_ngb->GetId(0), tempf);
-  //         vtkVector3d field_there(tempf);
-  //         field_here=field_here+field_there;
-  //       }
-  //     }
-  //     field_here.Normalize();
-  //     double * w = &field_here[0];
-  //     blurred_field->SetTuple(foo, w);
-  //     if (surface->GetCellData()->HasArray(blur_name))
-  //       surface->GetCellData()->RemoveArray(blur_name);
-  //     surface->GetCellData()->AddArray(blurred_field);
-  //   }
-  // }
-  // If an old curvature array already exists we remove it
   if (surface->GetCellData()->HasArray(euc_minor_name)){
     surface->GetCellData()->RemoveArray(euc_minor_name);
   }
@@ -794,8 +756,8 @@ vtkSmartPointer<vtkPolyData> compute_curvature_frame(vtkSmartPointer<vtkPolyData
   surface->GetCellData()->AddArray(euc_field);
   surface->GetCellData()->AddArray(curvatures);
 
-  surface = align_field(surface);
   surface = reorient_frame(surface);
+  surface = align_field(surface);
 
   return surface;
 }
@@ -947,7 +909,7 @@ vtkSmartPointer<vtkPolyData> blur_scalar_field (vtkSmartPointer<vtkPolyData> sur
 }
 
 
-array<double,4> local_coordinate_vec(int at_cell,  vtkSmartPointer<vtkPolyData> surface){
+array<double,2> local_coordinate_vec(int at_cell,  vtkSmartPointer<vtkPolyData> surface){
   vtkSmartPointer<vtkDataArray> vec_field = surface->GetCellData()->GetArray(euc_minor_name);
   //Compute the vector field in local coordinates.
   //Compute the local coordinate representation over
@@ -970,21 +932,15 @@ array<double,4> local_coordinate_vec(int at_cell,  vtkSmartPointer<vtkPolyData> 
   }
   //edges are computed.
   //
-  double e00 = edges[0].Dot(edges[0]), e01 = edges[0].Dot(edges[1]), e11 = edges[1].Dot(edges[1]);
-  double edet = e00*e11-e01*e01;
+  // double e00 = edges[0].Dot(edges[0]), e01 = edges[0].Dot(edges[1]), e11 = edges[1].Dot(edges[1]);
+  //double edet = e00*e11-e01*e01;
   double temp[3];
   vec_field->GetTuple(at_cell,temp);
   vtkVector3d vecvect(temp);
-  double e0dw = edges[0].Dot(vecvect)  , e1dw = edges[1].Dot(vecvect) ;
-  double len0=edges[0].Norm();
-  double len1=edges[1].Norm();
-  vtkVector3d area = edges[0].Cross(edges[1]);
-  double lenscale = sqrt( area.Norm());
-  array<double,4> local_vec={
-    (e11*e0dw - e01 * e1dw) / edet * lenscale,
-    (e00*e1dw - e01 * e0dw) / edet * lenscale,
-    len0,
-    len1 // * lenscale
+  double e0dw = edges[0].Dot(vecvect) , e1dw = edges[1].Dot(vecvect) ;
+  array<double,2> local_vec={
+    e0dw,
+    e1dw
   };
   return local_vec;
 }
@@ -1008,15 +964,15 @@ vtkSmartPointer<vtkPolyData> potential_from_vec_field(vtkSmartPointer<vtkPolyDat
     auto cell_pts = vtkSmartPointer<vtkIdList>::New();
     surface->GetCellPoints(foo,cell_pts);
     int pt0=cell_pts->GetId(0), pt1=cell_pts->GetId(1), pt2=cell_pts->GetId(2);
-    array<double,4> local_vec = local_coordinate_vec(foo, surface);
+    array<double,2> local_vec = local_coordinate_vec(foo, surface);
     vec_field_entrylist.push_back( Eigen::Triplet<double> ( foo, 0, local_vec[0] ) );
     vec_field_entrylist.push_back( Eigen::Triplet<double> ( foo + num_surf_cells, 0, local_vec[1] ) );
     //The graditent per cell has component0 = u(p2)-u(p1)
     //and component1 = u(p0)-u(p2)
-    grad_entrylist.push_back( Eigen::Triplet<double> (foo, pt2, 1/local_vec[2]) );
-    grad_entrylist.push_back( Eigen::Triplet<double> (foo, pt1, -1/local_vec[2]) );
-    grad_entrylist.push_back( Eigen::Triplet<double> (foo+ num_surf_cells, pt0, 1/local_vec[3]) );
-    grad_entrylist.push_back( Eigen::Triplet<double> (foo+ num_surf_cells, pt2, -1/local_vec[3]) );
+    grad_entrylist.push_back( Eigen::Triplet<double> (foo, pt2, 1) );
+    grad_entrylist.push_back( Eigen::Triplet<double> (foo, pt1, -1) );
+    grad_entrylist.push_back( Eigen::Triplet<double> (foo+ num_surf_cells, pt0, 1) );
+    grad_entrylist.push_back( Eigen::Triplet<double> (foo+ num_surf_cells, pt2, -1) );
   }
   //Add constraint u(0)=0
   grad_entrylist.push_back( Eigen::Triplet<double> (2*num_surf_cells, 0, 1) );
@@ -1056,7 +1012,7 @@ vtkSmartPointer<vtkPolyData> potential_from_vec_field(vtkSmartPointer<vtkPolyDat
 
 vtkSmartPointer<vtkPolyData> build_small_simplicial_example()
 {
-  string example_name ("cylinder"); //"simple" "simple2" "cylinder" "grid"
+  string example_name ("grid"); //"simple" "simple2" "cylinder" "grid"
   auto points = vtkSmartPointer<vtkPoints>::New();
   auto triangles = vtkSmartPointer<vtkCellArray>::New();
 
@@ -1128,10 +1084,10 @@ vtkSmartPointer<vtkPolyData> build_small_simplicial_example()
   }
   if (example_name.compare("cylinder") == 0)
   {
-    double cyl_wobble_amp = 0, cyl_wobble_freq=2 , cylrad=1, cylheight=1;
+    double cyl_wobble_amp = .3, cyl_wobble_freq=2 , cylrad=1, cylheight=350;
     //Suggest parameters .3,2,1
     int xtris = 50;
-    int ytris = 5;
+    int ytris = 50;
     int const num_pts = xtris*(ytris+1);
     vector< array<double,2> > param_pts;
     param_pts.resize(num_pts);
@@ -1184,8 +1140,8 @@ vtkSmartPointer<vtkPolyData> build_small_simplicial_example()
   }
   if (example_name == "grid")
   {
-    int gridx=30;
-    int gridy=10;
+    int gridx=100;
+    int gridy=100;
     int num_pts=(gridx+1)*(gridy+1);
     vector< array< double, 3 >> pt_pos;
     pt_pos.resize(num_pts);
@@ -1241,7 +1197,7 @@ vtkSmartPointer<vtkPolyData> build_small_simplicial_example()
 int main(int argc, const char* argv[]){
   const char* output_name;
   auto surface = vtkSmartPointer<vtkPolyData>::New();
-  bool is_input = false;
+  bool is_input = true;
   if (is_input) {
     if (argc < 3) {
       fprintf(stderr,"Usage: %s <input> [<output.vtp>] \n",argv[0]);
@@ -1315,9 +1271,7 @@ int main(int argc, const char* argv[]){
   cout<<"Computing minor principle curvature field. "<<endl;
 
   surface = compute_curvature_frame( surface );
-
   // surface = compute_tubular_parametrization( surface );
-
   surface = potential_from_vec_field( surface );
 
   surface = blur_scalar_field (surface, potential_name, "blur");
