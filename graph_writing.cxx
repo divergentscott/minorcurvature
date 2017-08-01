@@ -33,6 +33,8 @@ using namespace std;
 const char* minor_name="Local Coord Minor Curvature Direction";
 const char* euc_minor_name="Minor Curvature Direction";
 const char* curvatures_name="Curvatures";
+const char* tube_param_name="Tubular Parametrization";
+const char* potential_name="Potential";
 const double INV_ROOT_2 = 1.0/sqrt(2);
 
 //RR3 vectors should have addition
@@ -365,6 +367,8 @@ vector<bool> maxcut_surface_cells(vtkSmartPointer<vtkPolyData> surface, int (*we
   return in_or_out;
 }
 
+
+
 vtkSmartPointer<vtkPolyData> reorient_frame (vtkSmartPointer<vtkPolyData> surface ){
   //Compute a maxcut to decide what to flip perp
   vector<bool> good_line = maxcut_surface_cells(surface, perpin_weights);
@@ -377,7 +381,7 @@ vtkSmartPointer<vtkPolyData> reorient_frame (vtkSmartPointer<vtkPolyData> surfac
     else flip90->SetValue(foo,1);
   }
   surface->GetCellData()->AddArray(flip90);
-
+  //Rotate the vectors that were decided to flip perpindicular
   vtkSmartPointer<vtkDataArray> euc_field = surface->GetCellData()->GetArray(euc_minor_name);
   vtkSmartPointer<vtkDataArray> normals=surface->GetCellData()->GetNormals();
   for(int foo=0; foo<num_surf_cells; foo++){
@@ -392,7 +396,6 @@ vtkSmartPointer<vtkPolyData> reorient_frame (vtkSmartPointer<vtkPolyData> surfac
       euc_field->SetTuple3( foo, ve[0], ve[1], ve[2]);
     }
   }
-  //!!!!Why is this here?
   surface->GetCellData()->AddArray( euc_field );
 
   //Compute a maxcut to decide what to flip parallel
@@ -414,30 +417,9 @@ vtkSmartPointer<vtkPolyData> reorient_frame (vtkSmartPointer<vtkPolyData> surfac
     }
   }
   surface->GetCellData()->AddArray( euc_field );
-
-  //Compute a maxcut to decide what to flip parallel
-  vector<bool> good_forward2 = maxcut_surface_cells(surface, perpin_weight_by_curv );
-  auto flip1802 = vtkSmartPointer<vtkIntArray>::New();
-  flip1802->SetNumberOfTuples(num_surf_cells);
-  flip1802->SetName("perp origy maybe");
-  for(int foo=0; foo<num_surf_cells; foo++){
-    if( good_forward2[foo] ) flip1802->SetValue(foo,0);
-    else flip1802->SetValue(foo,1);
-  }
-  surface->GetCellData()->AddArray(flip1802);
-
-  // for(int foo=0; foo<num_surf_cells; foo++){
-  //   if( !good_forward2[foo] ){
-  //     double tri[3];
-  //     euc_field->GetTuple( foo, tri);
-  //     euc_field->SetTuple3( foo, -tri[0], -tri[1], -tri[2]);
-  //   }
-  // }
-  // surface->GetCellData()->AddArray( euc_field );
-
-
   return surface;
 }
+
 
 //Function to align the vector field consistently
 vtkSmartPointer<vtkPolyData> align_field(vtkSmartPointer<vtkPolyData> surface ){
@@ -926,7 +908,6 @@ vtkSmartPointer<vtkPolyData> compute_tubular_parametrization(vtkSmartPointer<vtk
   int it_took = difftime(time2,time1);
   cout<<"Integration finished in " << it_took/60 << " min and " << it_took%60 << " sec." <<endl;
   cout<<"Required " << solver.iterations() << " iterations obtaining error " << solver.error() <<endl;
-  const char* tube_param_name="Tubular Parametrization";
   auto tube_param = vtkSmartPointer<vtkDoubleArray>::New();
   tube_param->SetNumberOfComponents(1);
   tube_param->SetNumberOfTuples(num_pts);
@@ -938,6 +919,32 @@ vtkSmartPointer<vtkPolyData> compute_tubular_parametrization(vtkSmartPointer<vtk
   return surface;
 }
 
+
+//Apply a uniform neighbor blut to a scalar field
+vtkSmartPointer<vtkPolyData> blur_scalar_field (vtkSmartPointer<vtkPolyData> surface, const char* oldname , const char* newname ){
+  int num_pts = surface->GetNumberOfPoints();
+  auto tube_param = surface->GetPointData()->GetArray(oldname);
+  auto blurred_sc = vtkSmartPointer<vtkDoubleArray>::New();
+  blurred_sc->SetNumberOfComponents(1);
+  blurred_sc->SetNumberOfTuples(num_pts);
+  blurred_sc->SetName(newname);
+  for(int foo=0; foo<num_pts; foo++){
+    double blur_val = 0.0;
+    double tmp[1];
+    tube_param->GetTuple(foo, tmp);
+    blur_val+= tmp[0];
+    set<int> ngbs = adjacent_vertices(foo, surface);
+    int degp1 = ngbs.size()+1;
+    for (int ngb : ngbs){
+      double tmp2;
+      tmp2 = tube_param->GetTuple1(ngb);
+      blur_val+= tmp2;
+    }
+    blurred_sc->SetTuple1( foo, blur_val / degp1);
+  }
+  surface->GetPointData()->AddArray(blurred_sc);
+  return surface;
+}
 
 
 array<double,4> local_coordinate_vec(int at_cell,  vtkSmartPointer<vtkPolyData> surface){
@@ -1034,7 +1041,6 @@ vtkSmartPointer<vtkPolyData> potential_from_vec_field(vtkSmartPointer<vtkPolyDat
   int it_took = difftime(time2,time1);
   cout<<"Integration finished in " << it_took/60 << " min and " << it_took%60 << " sec." <<endl;
   cout<<"Required " << solver.iterations() << " iterations obtaining error " << solver.error() <<endl;
-  const char* potential_name="Potential";
   auto potential_field = vtkSmartPointer<vtkDoubleArray>::New();
   potential_field->SetNumberOfComponents(1);
   potential_field->SetNumberOfTuples(num_pts);
@@ -1122,10 +1128,10 @@ vtkSmartPointer<vtkPolyData> build_small_simplicial_example()
   }
   if (example_name.compare("cylinder") == 0)
   {
-    double cyl_wobble_amp = .3, cyl_wobble_freq=2 , cylrad=1, cylheight=1;
+    double cyl_wobble_amp = 0, cyl_wobble_freq=2 , cylrad=1, cylheight=1;
     //Suggest parameters .3,2,1
-    int xtris = 70;
-    int ytris = 70;
+    int xtris = 50;
+    int ytris = 5;
     int const num_pts = xtris*(ytris+1);
     vector< array<double,2> > param_pts;
     param_pts.resize(num_pts);
@@ -1148,13 +1154,13 @@ vtkSmartPointer<vtkPolyData> build_small_simplicial_example()
         cell_list[foo][2]=0 + pt_col  + xtris * (pt_row+1);
       }
     }
-    double const y_shift=sqrt(3)/2;
+    // double const y_shift=sqrt(3)/2;
     //double const x_shift=1;
     for(int foo =0; foo < (xtris)*(ytris+1); foo++){
       int pt_col = foo%xtris;
       int pt_row = foo/xtris;
       param_pts[foo][0]=pt_col + 0.5*pt_row;
-      param_pts[foo][1]=y_shift*pt_row;
+      param_pts[foo][1]=pt_row;
     }
     //Apply parametrization to obtain points in R3
     //int num_pts = sizeof(param_pts)/sizeof(param_pts[0]);
@@ -1166,7 +1172,7 @@ vtkSmartPointer<vtkPolyData> build_small_simplicial_example()
       double rad_now = cyl_wobble_amp * cos(2*M_PI*cyl_wobble_freq*p2/ytris ) + cylrad;
       pt[0] = rad_now * cos(2*M_PI*p1/xtris);
       pt[1] = rad_now * sin(2*M_PI*p1/xtris);
-      pt[2] = 2*M_PI*cylheight*p2/ytris;
+      pt[2] = cylheight*p2/(ytris);
       points->SetPoint(foo, pt[0], pt[1], pt[2]);
     }
     for(int foo = 0; foo< num_tris; foo++){
@@ -1234,8 +1240,8 @@ vtkSmartPointer<vtkPolyData> build_small_simplicial_example()
 
 int main(int argc, const char* argv[]){
   const char* output_name;
-  auto surface= vtkSmartPointer<vtkPolyData>::New();
-  bool is_input = true;
+  auto surface = vtkSmartPointer<vtkPolyData>::New();
+  bool is_input = false;
   if (is_input) {
     if (argc < 3) {
       fprintf(stderr,"Usage: %s <input> [<output.vtp>] \n",argv[0]);
@@ -1313,6 +1319,9 @@ int main(int argc, const char* argv[]){
   // surface = compute_tubular_parametrization( surface );
 
   surface = potential_from_vec_field( surface );
+
+  surface = blur_scalar_field (surface, potential_name, "blur");
+  for(int foo =0; foo < 5; foo++)   surface = blur_scalar_field (surface, "blur", "blur");
 
   cout<<"Writing file "<<output_name<<endl;
   vtkSmartPointer<vtkXMLPolyDataWriter> writer = vtkSmartPointer<vtkXMLPolyDataWriter>::New();
