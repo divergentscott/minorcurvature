@@ -24,7 +24,7 @@ set(BLOSSOM_DIR blossom5-v2.05.src)
 file(GLOB_RECURSE BLOSSOM_SRC ${BLOSSOM_DIR}/*.h  ${BLOSSOM_DIR}/*.cpp)
 
 
-add_executable(lesscurve MACOSX_BUNDLE lesscurve.cxx)
+add_executable(lesscurve MACOSX_BUNDLE lesscurve.cxx ${BLOSSOM_SRC})
 
 add_executable(graph_writing MACOSX_BUNDLE graph_writing.cxx ${BLOSSOM_SRC})
 

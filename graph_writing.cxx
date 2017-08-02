@@ -27,6 +27,11 @@
 #include <vtkMutableUndirectedGraph.h>
 #include <vtkBoostConnectedComponents.h>
 #include <vtkBoostBreadthFirstSearch.h>
+#include <vtkReebGraph.h>
+#include <vtkGraphWriter.h>
+#include <vtkGraphLayoutView.h>
+#include <vtkSimple2DLayoutStrategy.h>
+#include <vtkRenderWindowInteractor.h>
 
 using namespace std;
 
@@ -1249,37 +1254,31 @@ int main(int argc, const char* argv[]){
     surface = build_small_simplicial_example();
   }
 
-  // auto surface = vtkSmartPointer<vtkPolyData>::New();
-  // vtkSmartPointer<vtkSTLReader> reader = vtkSmartPointer<vtkSTLReader>::New();
-  // reader->SetFileName(argv[0]);
-  // reader->Update();
-  // surface = reader->GetOutput();
-  //  surface->BuildCells();
-  auto normalGenerator = vtkSmartPointer<vtkPolyDataNormals>::New();
+  auto reeber = vtkSmartPointer<vtkReebGraph>::New();
+  reeber->Build(surface, potential_name);
+  reeber->Simplify(.5 , nullptr);
 
-  //Compute normal vectors for all cells
-  cout<<"Computing normals."<<endl;
-  normalGenerator->SetInputData(surface);
-  normalGenerator->ComputePointNormalsOff();
-  normalGenerator->ComputeCellNormalsOn();
-  normalGenerator->SetSplitting(0);
-  normalGenerator->AutoOrientNormalsOn();
-  normalGenerator->Update();
-  surface = normalGenerator->GetOutput();
-  //surface->DeleteCells();
-  surface->BuildLinks();
-  cout<<"Computing minor principle curvature field. "<<endl;
+  vtkSmartPointer<vtkMutableUndirectedGraph> g =
+    vtkSmartPointer<vtkMutableUndirectedGraph>::New();
 
-  surface = compute_curvature_frame( surface );
-  // surface = compute_tubular_parametrization( surface );
-  surface = potential_from_vec_field( surface );
+  vtkIdType v1 = g->AddVertex();
+  vtkIdType v2 = g->AddVertex();
+  vtkIdType v3 = g->AddVertex();
 
-  surface = blur_scalar_field (surface, potential_name, "blur");
-  for(int foo =0; foo < 5; foo++)   surface = blur_scalar_field (surface, "blur", "blur");
+  g->AddEdge(v1, v2);
+  g->AddEdge(v3, v2);
+  vtkSmartPointer<vtkGraphLayoutView> graphLayoutView =
+    vtkSmartPointer<vtkGraphLayoutView>::New();
+  graphLayoutView->AddRepresentationFromInput(reeber);
+  graphLayoutView->SetLayoutStrategy("Simple 2D");
+  graphLayoutView->ResetCamera();
+  graphLayoutView->Render();
 
-  cout<<"Writing file "<<output_name<<endl;
-  vtkSmartPointer<vtkXMLPolyDataWriter> writer = vtkSmartPointer<vtkXMLPolyDataWriter>::New();
+  vtkSimple2DLayoutStrategy::SafeDownCast(graphLayoutView->GetLayoutStrategy())->SetRandomSeed(0);
+  graphLayoutView->GetInteractor()->Start();
+
+  vtkSmartPointer<vtkGraphWriter> writer = vtkSmartPointer<vtkGraphWriter>::New();
   writer->SetFileName(output_name);
-  writer->SetInputData(surface);
+  writer->SetInputData(reeber);
   writer->Write();
 }
