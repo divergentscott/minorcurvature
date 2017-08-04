@@ -1254,10 +1254,10 @@ int main(int argc, const char* argv[]){
     surface = build_small_simplicial_example();
   }
 
-  auto reeber = vtkSmartPointer<vtkReebGraph>::New();
-  reeber->Build(surface, potential_name);
-  reeber->Simplify(.5 , nullptr);
-
+  // auto reeber = vtkSmartPointer<vtkReebGraph>::New();
+  // reeber->Build(surface, potential_name);
+  // reeber->Simplify(.5 , nullptr);
+  //
   vtkSmartPointer<vtkMutableUndirectedGraph> g =
     vtkSmartPointer<vtkMutableUndirectedGraph>::New();
 
@@ -1269,16 +1269,16 @@ int main(int argc, const char* argv[]){
   g->AddEdge(v3, v2);
   vtkSmartPointer<vtkGraphLayoutView> graphLayoutView =
     vtkSmartPointer<vtkGraphLayoutView>::New();
-  graphLayoutView->AddRepresentationFromInput(reeber);
+  graphLayoutView->AddRepresentationFromInput(g);
   graphLayoutView->SetLayoutStrategy("Simple 2D");
   graphLayoutView->ResetCamera();
   graphLayoutView->Render();
 
-  vtkSimple2DLayoutStrategy::SafeDownCast(graphLayoutView->GetLayoutStrategy())->SetRandomSeed(0);
+  // vtkSimple2DLayoutStrategy::SafeDownCast(graphLayoutView->GetLayoutStrategy())->SetRandomSeed(0);
   graphLayoutView->GetInteractor()->Start();
 
-  vtkSmartPointer<vtkGraphWriter> writer = vtkSmartPointer<vtkGraphWriter>::New();
-  writer->SetFileName(output_name);
-  writer->SetInputData(reeber);
-  writer->Write();
+  // vtkSmartPointer<vtkGraphWriter> writer = vtkSmartPointer<vtkGraphWriter>::New();
+  // writer->SetFileName(output_name);
+  // writer->SetInputData(reeber);
+  // writer->Write();
 }
