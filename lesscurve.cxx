@@ -157,7 +157,13 @@ vector<int> vert_pair_cells_shared( int pt1, int pt2, vtkSmartPointer<vtkPolyDat
 }
 //--+++++++++++++++--//
 
-
+double edge_length(int vert1, int vert2, vtkSmartPointer<vtkPolyData> surface){
+  double temp1[3], temp2[3];
+  surface->GetPoint(vert1, temp1);
+  surface->GetPoint(vert2, temp2);
+  double ed_len = sqrt( vtkMath::Distance2BetweenPoints(temp1, temp2) );
+  return ed_len;
+}
 
 double dot_ngbs(int tri1, int tri2, vtkSmartPointer<vtkPolyData> surface, int rot2){
   //Dot the fields of neighboring triangles. Rotate the 2nd vector by pi/2*rot2
@@ -186,13 +192,14 @@ double dot_ngbs(int tri1, int tri2, vtkSmartPointer<vtkPolyData> surface, int ro
 int perpin_weights(int vert1, int vert2, vtkSmartPointer<vtkPolyData> surface){
   //Computes the weights for a maxcut of parllel vs perpindicular vectors
   //Option
-  int bins = 10000000;
+  int bins = 32768;
   vector<int> common_cells =  vert_pair_cells_shared(vert1, vert2, surface);
   if( common_cells.size() == 2){
     double w0 = dot_ngbs( common_cells[0], common_cells[1], surface, 0);
     double w1 = dot_ngbs( common_cells[0], common_cells[1], surface, 1);
     double w3 = dot_ngbs( common_cells[1], common_cells[0], surface, 1);
-    double wght = w0*w0 - 0.5*(w1*w1 + w3*w3);
+    double wght =  0.5*(w1*w1 + w3*w3) - w0*w0;
+    if( fabs(wght) > 2) cout<<"Is there a disaster in the MAXCUT weights??";
     return round( wght * bins);
   }
   else return 0;
@@ -201,38 +208,57 @@ int perpin_weights(int vert1, int vert2, vtkSmartPointer<vtkPolyData> surface){
 int parallel_weights(int vert1, int vert2, vtkSmartPointer<vtkPolyData> surface){
   //Computes the weights for a maxcut of forward vs backward
   //Option
-  int bins = 10000000;
+  int bins = 32768;
   vector<int> common_cells =  vert_pair_cells_shared(vert1, vert2, surface);
   if( common_cells.size() == 2){
-    double wght = dot_ngbs( common_cells[0], common_cells[1], surface, 0);
+    double wght = - dot_ngbs( common_cells[0], common_cells[1], surface, 0);
+    if( fabs(wght) > 2) cout<<"Is there a disaster in the MAXCUT weights??";
     return round( wght * bins);
   }
   else return 0;
 }
 
-int perpin_weight_by_curv(int vert1, int vert2, vtkSmartPointer<vtkPolyData> surface){
+int parallel_weights_leng(int vert1, int vert2, vtkSmartPointer<vtkPolyData> surface){
+  //Computes the weights for a maxcut of forward vs backward
+  //Option
+  int bins = 2048000;
+  vector<int> common_cells =  vert_pair_cells_shared(vert1, vert2, surface);
+  if( common_cells.size() == 2){
+    double temp1[3], temp2[3];
+    surface->GetPoint(vert1, temp1);
+    surface->GetPoint(vert2, temp2);
+    double ed_len = sqrt( vtkMath::Distance2BetweenPoints(temp1, temp2) );
+    // cout<<"Edge "<<vert1<<" "<<vert2<<" length "<<ed_len<<endl;
+    vector<int> common_cells =  vert_pair_cells_shared(vert1, vert2, surface);
+    double wght = - ed_len * dot_ngbs( common_cells[0], common_cells[1], surface, 0);
+    if( fabs(wght) > 2) cout<<"Is there a disaster in the MAXCUT weights??";
+    return round( wght * bins);
+  }
+  else return 0;
+}
+
+
+int parallel_weight_by_curv(int vert1, int vert2, vtkSmartPointer<vtkPolyData> surface){
   //What if we weight proportionally with the difference in curvatures
   //If two cells seem flat, we shouldn't care if they are aligned or not
-  int bins = 1000000000;
+  int bins = 32768;
   vector<int> common_cells =  vert_pair_cells_shared(vert1, vert2, surface);
   if( common_cells.size() == 2){
     auto curvels = surface->GetCellData()->GetArray(curvatures_name);
     double curvs0[2];
     curvels->GetTuple( common_cells[0], curvs0);
-    double sure0 = curvs0[0]-curvs0[1];
     double curvs1[2];
     curvels->GetTuple( common_cells[1], curvs1);
-    double sure1 = curvs1[0]-curvs1[1];
+    double minor_curv_avg = .5*(curvs0[1]+curvs1[0]);
+    double major_curv_avg = .5*(curvs0[1]+curvs1[0]);
     double w0 = dot_ngbs( common_cells[0], common_cells[1], surface, 0);
-    double w1 = dot_ngbs( common_cells[0], common_cells[1], surface, 1);
-    double w3 = dot_ngbs( common_cells[1], common_cells[0], surface, 1);
-    double wght = w0*w0 - 0.5*(w1*w1 + w3*w3);
-    if (sure0>sure1) wght *= sure0;
-    else wght *= sure1;
+    double wght = - fabs( major_curv_avg - minor_curv_avg ) * w0 ;
     return round( wght * bins);
   }
   else return 0;
 }
+
+
 
 
 
@@ -294,7 +320,9 @@ vector<bool> maxcut_surface_cells(vtkSmartPointer<vtkPolyData> surface, int (*we
   //The size of the rounding heavily impacts performance
   PerfectMatching blossom_matching( 2*num_surf_edges , blwp_edge_list.size() );
   for (auto an_edge: blwp_edge_list){
-    blossom_matching.AddEdge(an_edge[0], an_edge[1], an_edge[2]);
+    //Blossom computes MINIMAL perfect matching, but I was very commited to
+    //not confusing the problem with mincut-maxflow... the weight is negated here
+    blossom_matching.AddEdge(an_edge[0], an_edge[1], -an_edge[2]);
   }
   blossom_matching.Solve();
   //blossom_matching.GetMatch()
@@ -371,6 +399,7 @@ vector<bool> maxcut_surface_cells(vtkSmartPointer<vtkPolyData> surface, int (*we
 
 vtkSmartPointer<vtkPolyData> reorient_frame (vtkSmartPointer<vtkPolyData> surface ){
   //Compute a maxcut to decide what to flip perp
+  cout<<"Reorienting the line bundle direction.";
   vector<bool> good_line = maxcut_surface_cells(surface, perpin_weights);
   int const num_surf_cells = surface->GetNumberOfCells();
   auto flip90 = vtkSmartPointer<vtkIntArray>::New();
@@ -399,7 +428,8 @@ vtkSmartPointer<vtkPolyData> reorient_frame (vtkSmartPointer<vtkPolyData> surfac
   surface->GetCellData()->AddArray( euc_field );
 
   //Compute a maxcut to decide what to flip parallel
-  vector<bool> good_forward = maxcut_surface_cells(surface, parallel_weights);
+  cout<<"Reorienting the forward direction.";
+  vector<bool> good_forward = maxcut_surface_cells(surface, parallel_weights_leng);
   auto flip180 = vtkSmartPointer<vtkIntArray>::New();
   flip180->SetNumberOfTuples(num_surf_cells);
   flip180->SetName("Flip Parallel");
@@ -491,7 +521,7 @@ vtkSmartPointer<vtkPolyData> align_field(vtkSmartPointer<vtkPolyData> surface ){
 
             double conf = current_v.Dot(ngb_v);
             if( fabs(conf) > 0.9 ){
-              double curvas[2];
+              double curvas[4];
               curvatures->GetTuple( cell_ngb, curvas );
               cellPrior get_in_line{ cell_ngb, 0};
               conf *= fabs(curvas[0]) - fabs(curvas[1]);
@@ -640,9 +670,9 @@ vtkSmartPointer<vtkPolyData> compute_curvature_frame(vtkSmartPointer<vtkPolyData
   euc_field->SetNumberOfComponents(3);
   euc_field->SetNumberOfTuples(num_surf_cells);
   euc_field->SetName(euc_minor_name);
-  //Also store the principle curvatures
+  //Also store the principle curvatures and there absolute difference and the gauss curvature
   auto curvatures = vtkSmartPointer<vtkDoubleArray>::New();
-  curvatures->SetNumberOfComponents(2);
+  curvatures->SetNumberOfComponents(4);
   curvatures->SetNumberOfTuples(num_surf_cells);
   curvatures->SetName(curvatures_name);
   //Loop through the cells to compute the shape operator locally and extract
@@ -664,7 +694,7 @@ vtkSmartPointer<vtkPolyData> compute_curvature_frame(vtkSmartPointer<vtkPolyData
     //Compute_edge_vectors
     //For each edge compute the shape operator contribution.
     //The shape operator is discretized as
-    // sum_{e in edges} (angle at edge) projection matrix on tangent perp to e
+    // sum_{e in edges} (angle at edge) /(length of edge) * projection matrix on tangent perp to e
     // The shape operator is symmetric and computed in local edge coordinates.
     // Note that since we only care about direction, the shape operator is not
     // locally normalized so that the curvature is incorrect.
@@ -727,7 +757,7 @@ vtkSmartPointer<vtkPolyData> compute_curvature_frame(vtkSmartPointer<vtkPolyData
       major_curvature=(shape_trace - sqrt(shape_discr))/2.0;
       minor_curvature=(shape_trace + sqrt(shape_discr))/2.0;
     }
-    curvatures->SetTuple2(foo, major_curvature, minor_curvature);
+    curvatures->SetTuple4(foo, major_curvature, minor_curvature, major_curvature*minor_curvature, fabs( major_curvature-minor_curvature));
     double ortho_curv_vect[2];
     if (fabs(major_curvature-shape00) > fabs(major_curvature-shape11)){
       ortho_curv_vect[0] = shape01;
@@ -742,9 +772,11 @@ vtkSmartPointer<vtkPolyData> compute_curvature_frame(vtkSmartPointer<vtkPolyData
     if (magni>0) euc_curv_vect =  1/magni * euc_curv_vect ;
     //Hacky attempt at semi continuity by choosing rando hemisphere to rep RealProjective2Space
     //Pre-pre-alignment
+
     if(euc_curv_vect[2] < 0){
       euc_curv_vect = -1 * euc_curv_vect;
     }
+
     euc_field->SetTuple3( foo , euc_curv_vect[0], euc_curv_vect[1], euc_curv_vect[2]);
   }
   if (surface->GetCellData()->HasArray(euc_minor_name)){
@@ -756,8 +788,8 @@ vtkSmartPointer<vtkPolyData> compute_curvature_frame(vtkSmartPointer<vtkPolyData
   surface->GetCellData()->AddArray(euc_field);
   surface->GetCellData()->AddArray(curvatures);
 
-  surface = reorient_frame(surface);
   surface = align_field(surface);
+  surface = reorient_frame(surface);
 
   return surface;
 }
@@ -892,17 +924,20 @@ vtkSmartPointer<vtkPolyData> blur_scalar_field (vtkSmartPointer<vtkPolyData> sur
   blurred_sc->SetName(newname);
   for(int foo=0; foo<num_pts; foo++){
     double blur_val = 0.0;
-    double tmp[1];
-    tube_param->GetTuple(foo, tmp);
-    blur_val+= tmp[0];
     set<int> ngbs = adjacent_vertices(foo, surface);
-    int degp1 = ngbs.size()+1;
+    double ngbtotalwgt = 0;
     for (int ngb : ngbs){
       double tmp2;
+      double len = edge_length( foo, ngb , surface);
       tmp2 = tube_param->GetTuple1(ngb);
-      blur_val+= tmp2;
+      ngbtotalwgt += 1/len;
+      blur_val+= tmp2 / len;
     }
-    blurred_sc->SetTuple1( foo, blur_val / degp1);
+    blur_val *= 0.5/ngbtotalwgt;
+    double tmp[1];
+    tube_param->GetTuple(foo, tmp);
+    blur_val+= 0.5* tmp[0];
+    blurred_sc->SetTuple1( foo, blur_val);
   }
   surface->GetPointData()->AddArray(blurred_sc);
   return surface;
@@ -1275,7 +1310,7 @@ int main(int argc, const char* argv[]){
   surface = potential_from_vec_field( surface );
 
   surface = blur_scalar_field (surface, potential_name, "blur");
-  for(int foo =0; foo < 5; foo++)   surface = blur_scalar_field (surface, "blur", "blur");
+  for(int foo =0; foo < 100; foo++)   surface = blur_scalar_field (surface, "blur", "blur");
 
   cout<<"Writing file "<<output_name<<endl;
   vtkSmartPointer<vtkXMLPolyDataWriter> writer = vtkSmartPointer<vtkXMLPolyDataWriter>::New();
