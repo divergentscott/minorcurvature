@@ -35,6 +35,7 @@
 
 using namespace std;
 
+const double M_PI = 3.14159265359;
 const char* minor_name="Local Coord Minor Curvature Direction";
 const char* euc_minor_name="Minor Curvature Direction";
 const char* curvatures_name="Curvatures";
@@ -1104,7 +1105,7 @@ vtkSmartPointer<vtkPolyData> build_small_simplicial_example()
       int const is_down = foo%2;
       int const pt_col = sq % xtris;
       int const pt_row = floor(sq / xtris);
-      if(not is_down){
+      if(!is_down){
         cell_list[foo][0]= pt_col  + xtris * pt_row;
         cell_list[foo][1]=(1 + pt_col) % xtris  + xtris * (pt_row);
         cell_list[foo][2]=0 + pt_col + xtris * (pt_row+1);
